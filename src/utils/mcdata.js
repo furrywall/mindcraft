@@ -67,6 +67,23 @@ export function initBot(username) {
 
     const bot = createBot(options);
 
+    // node-minecraft-protocol hashes the last seen chat messages in storage order, but vanilla hashes them
+    // oldest to newest. once more than 20 signed messages have been seen the two differ, the checksum is wrong
+    // and the server kicks the bot ("Checksum mismatch on last seen update"), so recompute it the vanilla way.
+    const checksumTypes = {};
+    const fixChatChecksum = (name, data) => {
+        if (name !== 'chat_message' && name !== 'chat_command' && name !== 'chat_command_signed') return data;
+        if (typeof data?.checksum !== 'number') return data;
+        const checksum = lastSeenChecksum(bot._client._lastSeenMessages);
+        if (checksum === null) return data;
+        if (!(name in checksumTypes)) {
+            const fields = minecraftData(bot.version)?.protocol?.play?.toServer?.types?.['packet_' + name]?.[1];
+            checksumTypes[name] = Array.isArray(fields) ? fields.find(f => f.name === 'checksum')?.type : undefined;
+        }
+        const signed = checksumTypes[name] === 'i8';
+        return { ...data, checksum: signed && checksum > 127 ? checksum - 256 : checksum };
+    };
+
     // Throttle position packets to avoid kicks on Paper/Spigot servers
     // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
     // when mineflayer sends position updates faster than 50ms apart
@@ -75,6 +92,7 @@ export function initBot(username) {
     const POSITION_THROTTLE_MS = 50;
     const originalWrite = bot._client.write.bind(bot._client);
     bot._client.write = function(name, data) {
+        data = fixChatChecksum(name, data);
         if (name === 'position' || name === 'position_look' || name === 'look') {
             const now = Date.now();
             if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
@@ -127,9 +145,50 @@ export function initBot(username) {
         mc_version = bot.version;
         mcdata = minecraftData(mc_version);
         Item = prismarine_items(mc_version);
+        fixToolMaterials(bot.registry);
+        fixToolMaterials(mcdata);
+        // armor-manager reads the item off every collected entity, which throws if the server never sent that
+        // entity's item metadata. thrown inside a packet handler, that takes down the whole agent process.
+        for (const listener of bot.listeners('playerCollect')) {
+            bot.removeListener('playerCollect', listener);
+            bot.on('playerCollect', (...args) => {
+                try {
+                    listener(...args);
+                } catch (err) {
+                    console.warn('Ignored error while handling a collected item:', err.message);
+                }
+            });
+        }
     });
 
     return bot;
+}
+
+function lastSeenChecksum(lastSeen) {
+    /* The vanilla last seen messages checksum: Arrays.hashCode of each tracked signature, combined from the
+       oldest entry to the newest, cast to a byte (and never 0). Returns null for chat formats without a ring. */
+    if (!lastSeen || typeof lastSeen.offset !== 'number' || !lastSeen.capacity) return null;
+    let checksum = 1;
+    for (let i = 0; i < lastSeen.capacity; i++) {
+        const signature = lastSeen[(lastSeen.offset + i) % lastSeen.capacity]?.signature;
+        if (!signature) continue;
+        let hash = 1;
+        for (const byte of signature) hash = (Math.imul(31, hash) + byte) | 0;
+        checksum = (Math.imul(31, checksum) + hash) | 0;
+    }
+    const result = checksum & 0xff;
+    return result === 0 ? 1 : result;
+}
+
+function fixToolMaterials(registry) {
+    /* minecraft-data files blocks that need a stone or better pickaxe (ores, obsidian...) under materials like
+       'incorrect_for_wooden_tool', which have no pickaxe speeds. dig times then come out as if mined by hand
+       (75s for obsidian with a diamond pickaxe instead of 9.4s) and tool choice suffers. They're all pickaxe blocks. */
+    if (!registry?.blocksArray || !registry.materials?.['mineable/pickaxe']) return;
+    for (const block of registry.blocksArray) {
+        if (block.material?.startsWith('incorrect_for_'))
+            block.material = 'mineable/pickaxe';
+    }
 }
 
 export function isHuntable(mob) {
