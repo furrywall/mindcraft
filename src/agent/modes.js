@@ -140,10 +140,17 @@ const modes_list = [
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
                 execute(this, agent, async () => {
-                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 10000);
-                    await skills.moveAway(bot, 5);
-                    clearTimeout(crashTimeout);
-                    say(agent, 'I\'m free.');
+                    // moveAway digs or towers out if it has to, and gives up on its own if it makes no progress
+                    const start = bot.entity.position.clone();
+                    try {
+                        await skills.moveAway(bot, 5);
+                    } catch (err) {
+                        console.warn('unstuck: moveAway failed:', err.message);
+                    }
+                    if (bot.entity.position.distanceTo(start) >= 2)
+                        say(agent, 'I\'m free.');
+                    else
+                        say(agent, 'I\'m still stuck.');
                 });
             }
             this.last_time = Date.now();
