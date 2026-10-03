@@ -256,7 +256,7 @@ export const actionsList = [
         name: '!collectBlocks',
         description: 'Collect the nearest blocks of a given type.',
         params: {
-            'type': { type: 'BlockName', description: 'The block type to collect.' },
+            'type': { type: 'BlockOrItemName', description: 'The block type to collect. Items mined from blocks work too, like raw_iron or flint (from gravel).' },
             'num': { type: 'int', description: 'The number of blocks to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, type, num) => {

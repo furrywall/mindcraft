@@ -72,6 +72,43 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     return movements;
 }
 
+function stopPathfinding(bot) {
+    // pathfinder.stop() alone only takes effect when the bot reaches its next path node, and otherwise leaves a
+    // flag behind that cancels the *next* path. re-applying the movements makes the stop happen right now.
+    if (bot.pathfinder.goal || bot.pathfinder.isMoving()) {
+        bot.pathfinder.stop();
+        bot.pathfinder.setMovements(bot.pathfinder.movements);
+    }
+    else {
+        bot.pathfinder.setGoal(null); // nothing running, just make sure no stale stop flag is left behind
+    }
+}
+
+// slots outside the main inventory that still show up in the bot's inventory counts: the 2x2 crafting grid,
+// armor, and the off-hand. findInventoryItem doesn't search them, so items there look like they're missing
+const EXTRA_ITEM_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 45];
+
+async function findItemAnywhere(bot, itemName) {
+    /* findInventoryItem, but an item that is only in the off-hand, armor or crafting grid is first moved
+       into the main inventory so it can be tossed, deposited, eaten or placed. */
+    let item = bot.inventory.findInventoryItem(itemName);
+    if (item) return item;
+    for (const slot of EXTRA_ITEM_SLOTS) {
+        if (bot.inventory.slots[slot]?.name !== itemName) continue;
+        if (bot.inventory.emptySlotCount() === 0) {
+            log(bot, `Your ${itemName} is equipped or in the crafting grid, and there's no free inventory slot to move it to.`);
+            return null;
+        }
+        try {
+            await bot.putAway(slot);
+        } catch (err) {
+            return null;
+        }
+        return bot.inventory.findInventoryItem(itemName);
+    }
+    return null;
+}
+
 function getScaffoldItem(bot) {
     const items = bot.inventory.items();
     for (const name of SCAFFOLD_BLOCKS) {
@@ -529,10 +566,11 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 // critical hit: attack while falling after a jump. skip it in water/when the target is right on top of us
                 const can_crit = bot.entity.onGround && !bot.entity.isInWater && !bot.entity.isInLava && dist > 1.5 && entity.name !== 'creeper';
                 if (can_crit) {
+                    // jump, then hit on the way down
                     bot.setControlState('jump', true);
-                    await sleep(50);
+                    for (let t = 0; t < 6 && bot.entity.onGround; t++) await sleep(25);
                     bot.setControlState('jump', false);
-                    for (let t = 0; t < 8 && bot.entity.velocity.y > -0.05 && !bot.entity.onGround; t++) await sleep(50);
+                    for (let t = 0; t < 10 && bot.entity.velocity.y > -0.05 && !bot.entity.onGround; t++) await sleep(50);
                 }
                 if (!isAlive(bot, entity)) break;
                 if (bot.entity.position.distanceTo(entity.position) <= reach + 0.5) {
@@ -579,19 +617,25 @@ function simulateArrow(pitch, horizontal_dist) {
 function solveArrowPitch(horizontal_dist, dy, high=false) {
     // pitch whose arc passes through the target, or null if out of range. the flattest arc by default,
     // or a lob that comes down steeply onto the target when high is set
-    let prev = null;
-    const [from, to, step] = high ? [85, -60, -0.25] : [-60, 60, 0.25];
+    const heightAt = deg => simulateArrow(deg * Math.PI / 180, horizontal_dist)?.y ?? null;
+    let prev_deg = null, prev_y = null;
+    const [from, to, step] = high ? [89, -60, -0.5] : [-60, 89, 0.5];
     for (let deg = from; high ? deg >= to : deg <= to; deg += step) {
-        const pitch = deg * Math.PI / 180;
-        const res = simulateArrow(pitch, horizontal_dist);
-        if (!res) { prev = null; continue; }
-        if (res.y >= dy) {
-            if (!prev) return {pitch, ticks: res.ticks};
-            // interpolate between this and the previous angle
-            const f = (dy - prev.y) / (res.y - prev.y);
-            return {pitch: prev.pitch + (pitch - prev.pitch) * f, ticks: prev.ticks + (res.ticks - prev.ticks) * f};
+        const y = heightAt(deg);
+        // look for where the arc crosses the target height on the way from too low to high enough
+        if (y !== null && prev_y !== null && prev_y < dy && y >= dy) {
+            let lo = prev_deg, hi = deg; // heightAt(lo) < dy <= heightAt(hi)
+            for (let i = 0; i < 20; i++) {
+                const mid = (lo + hi) / 2;
+                const mid_y = heightAt(mid);
+                if (mid_y !== null && mid_y >= dy) hi = mid;
+                else lo = mid;
+            }
+            const pitch = hi * Math.PI / 180;
+            return {pitch, ticks: simulateArrow(pitch, horizontal_dist).ticks};
         }
-        prev = {pitch, y: res.y, ticks: res.ticks};
+        prev_deg = deg;
+        prev_y = y;
     }
     return null;
 }
@@ -688,7 +732,7 @@ export async function shootEntity(bot, entity, maxShots=8, high=false) {
         log(bot, `Need a bow and arrows to shoot.`);
         return false;
     }
-    bot.pathfinder.stop();
+    stopPathfinding(bot);
     bot.modes.pause('unstuck');
     for (let shot = 0; shot < maxShots; shot++) {
         if (bot.interrupt_code) return false;
@@ -784,8 +828,26 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         log(bot, `Invalid number of blocks to collect: ${num}.`);
         return false;
     }
+    if (blockType === 'flint') {
+        // flint only drops from gravel, one time in ten
+        const flint = () => world.getInventoryCounts(bot)['flint'] || 0;
+        const start = flint();
+        let mined = 0;
+        while (flint() - start < num && mined < num * 30 && !bot.interrupt_code) {
+            if (!(await collectBlock(bot, 'gravel', 1)))
+                break;
+            mined++;
+        }
+        const got = flint() - start;
+        log(bot, `Mined ${mined} gravel and got ${got} flint.`);
+        return got > 0;
+    }
+    // items that come from mining a block of a different name
+    const ore_items = {raw_iron: 'iron', raw_gold: 'gold', raw_copper: 'copper', quartz: 'nether_quartz_ore', clay_ball: 'clay'};
+    if (ore_items[blockType])
+        blockType = ore_items[blockType];
     let blocktypes = [blockType];
-    if (blockType === 'coal' || blockType === 'diamond' || blockType === 'emerald' || blockType === 'iron' || blockType === 'gold' || blockType === 'lapis_lazuli' || blockType === 'redstone')
+    if (['coal', 'diamond', 'emerald', 'iron', 'gold', 'copper', 'lapis_lazuli', 'redstone'].includes(blockType))
         blocktypes.push(blockType+'_ore');
     if (blockType.endsWith('ore'))
         blocktypes.push('deepslate_'+blockType);
@@ -809,10 +871,22 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // Blocks to ignore safety for, usually next to lava/water
     const unsafeBlocks = ['obsidian'];
 
+    let refused = 0; // blocks the server put back after we broke them, e.g. spawn protection
+    const refused_positions = new Set();
     for (let i=0; i<num; i++) {
+        if (bot.interrupt_code)
+            break;
         let blocks = world.getNearestBlocksWhere(bot, block => {
             if (!blocktypes.includes(block.name)) {
                 return false;
+            }
+            if (isLiquid && block.metadata !== 0) {
+                // collect only source blocks
+                return false;
+            }
+            if (!block.position) {
+                // findBlocks first checks each chunk section's palette with position-less blocks
+                return true;
             }
             if (exclude) {
                 for (let position of exclude) {
@@ -821,9 +895,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     }
                 }
             }
+            if (refused_positions.has(block.position.toString())) {
+                return false;
+            }
             if (isLiquid) {
-                // collect only source blocks
-                return block.metadata === 0;
+                return true;
             }
             
             return movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
@@ -851,14 +927,27 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
         }
+        const total_items = () => bot.inventory.items().reduce((sum, item) => sum + item.count, 0);
+        const items_before = total_items();
         try {
             let success = false;
             if (isLiquid) {
-                success = await useToolOnBlock(bot, 'bucket', block);
+                // a bucket only picks up source blocks, so make sure it actually filled
+                const full = blockType + '_bucket';
+                const before = world.getInventoryCounts(bot)[full] || 0;
+                await useToolOnBlock(bot, 'bucket', block);
+                await new Promise(resolve => setTimeout(resolve, 250));
+                success = (world.getInventoryCounts(bot)[full] || 0) > before;
+                if (!success) {
+                    refused_positions.add(block.position.toString());
+                    log(bot, `Couldn't fill the bucket from the ${blockType} at ${block.position}, trying another.`);
+                }
             }
             else if (mc.mustCollectManually(blockType)) {
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 2);
                 await bot.dig(block);
+                // give the drops (or the server's refusal) a moment to arrive
+                await new Promise(resolve => setTimeout(resolve, 300));
                 await pickupNearbyItems(bot);
                 success = true;
             }
@@ -866,11 +955,24 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 await bot.collectBlock.collect(block);
                 success = true;
             }
+            // the client clears a dug block right away, but the server puts it back if it refused the break.
+            // (a block that's back but dropped something is just sand or gravel falling into the gap)
+            if (success && !isLiquid && bot.blockAt(block.position)?.type === block.type && total_items() <= items_before) {
+                success = false;
+                refused++;
+                refused_positions.add(block.position.toString());
+                if (refused >= 2) {
+                    log(bot, `The server keeps putting the ${blockType} back after breaking it, so you can't break blocks here (spawn protection or a land claim?). Move further away and try again.`);
+                    break;
+                }
+            }
             if (success)
                 collected++;
             await autoLight(bot);
         }
         catch (err) {
+            if (bot.interrupt_code)
+                break;
             if (err.name === 'NoChests') {
                 log(bot, `Failed to collect ${blockType}: Inventory full, no place to deposit.`);
                 break;
@@ -968,6 +1070,28 @@ export async function breakBlockAt(bot, x, y, z) {
 }
 
 
+// blocks that are placed with an item of a different name, and the other way round
+const BLOCK_TO_ITEM = {
+    redstone_wire: 'redstone', water: 'water_bucket', lava: 'lava_bucket', powder_snow: 'powder_snow_bucket',
+    tripwire: 'string', potatoes: 'potato', carrots: 'carrot', wheat: 'wheat_seeds', beetroots: 'beetroot_seeds',
+    cocoa: 'cocoa_beans', sweet_berry_bush: 'sweet_berries', melon_stem: 'melon_seeds', pumpkin_stem: 'pumpkin_seeds',
+    torchflower_crop: 'torchflower_seeds', pitcher_crop: 'pitcher_pod', cave_vines: 'glow_berries', bamboo_sapling: 'bamboo',
+};
+const ITEM_TO_BLOCK = Object.fromEntries(Object.entries(BLOCK_TO_ITEM).filter(([block]) => block !== 'bamboo_sapling')
+    .map(([block, item]) => [item, block]));
+
+function itemForBlock(name) {
+    if (BLOCK_TO_ITEM[name]) return BLOCK_TO_ITEM[name];
+    // wall torches, signs, banners and heads are placed with the regular item
+    if (name.includes('wall_') && mc.getItemId(name) == null && mc.getItemId(name.replace('wall_', '')) != null)
+        return name.replace('wall_', '');
+    return name;
+}
+
+function blockForItem(name) {
+    return ITEM_TO_BLOCK[name] ?? name;
+}
+
 export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false) {
     /**
      * Place the given block type at the given position. It will build off from any adjacent blocks. Will fail if there is a block in the way or nothing to build off of.
@@ -990,6 +1114,8 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         log(bot, `Placing air (removing block) at ${target_dest}.`);
         return await breakBlockAt(bot, x, y, z);
     }
+    // accept item names too, e.g. 'potato' places potatoes and 'water_bucket' places water
+    blockType = blockForItem(blockType);
 
     if (bot.modes.isOn('cheat') && !dontCheat) {
         if (bot.restrict_to_inventory) {
@@ -1039,16 +1165,8 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         return true;
     }
 
-    let item_name = blockType;
-    if (item_name == "redstone_wire")
-        item_name = "redstone";
-    else if (item_name === 'water') {
-        item_name = 'water_bucket';
-    }
-    else if (item_name === 'lava') {
-        item_name = 'lava_bucket';
-    }
-    let block_item = bot.inventory.findInventoryItem(item_name);
+    let item_name = itemForBlock(blockType);
+    let block_item = await findItemAnywhere(bot, item_name);
     if (!block_item && bot.game.gameMode === 'creative' && !bot.restrict_to_inventory) {
         await bot.creative.setInventorySlot(36, mc.makeItem(item_name, 1)); // 36 is first hotbar slot
         block_item = bot.inventory.findInventoryItem(item_name);
@@ -1119,7 +1237,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         let goal = new pf.goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2);
         let inverted_goal = new pf.goals.GoalInvert(goal);
         bot.pathfinder.setMovements(makeMovements(bot));
-        await bot.pathfinder.goto(inverted_goal);
+        await gotoWithWatchdog(bot, inverted_goal);
     }
     if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
         // too far
@@ -1207,7 +1325,7 @@ export async function discard(bot, itemName, num=-1) {
      **/
     let discarded = 0;
     while (true) {
-        let item = bot.inventory.findInventoryItem(itemName);
+        let item = await findItemAnywhere(bot, itemName);
         if (!item) {
             break;
         }
@@ -1241,12 +1359,13 @@ export async function putInChest(bot, itemName, num=-1) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
-    let item = bot.inventory.findInventoryItem(itemName);
+    let item = await findItemAnywhere(bot, itemName);
     if (!item) {
         log(bot, `You do not have any ${itemName} to put in the chest.`);
         return false;
     }
-    let to_put = num === -1 ? item.count : Math.min(num, item.count);
+    const have = bot.inventory.items().filter(i => i.name === itemName).reduce((sum, i) => sum + i.count, 0);
+    let to_put = num === -1 ? have : Math.min(num, have);
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
     const chestContainer = await bot.openContainer(chest);
     await chestContainer.deposit(item.type, null, to_put);
@@ -1341,7 +1460,7 @@ export async function consume(bot, itemName="") {
      **/
     let item, name;
     if (itemName) {
-        item = bot.inventory.findInventoryItem(itemName);
+        item = await findItemAnywhere(bot, itemName);
         name = itemName;
     }
     if (!item) {
@@ -1434,27 +1553,12 @@ export async function goToGoal(bot, goal) {
      * @param {pf.goals.Goal} goal, the goal to navigate to.
      **/
 
-    const nonDestructiveMovements = makeMovements(bot, {digCost: 10, placeCost: 2});
-    const dontBreakBlocks = ['glass', 'glass_pane'];
-    for (let block of dontBreakBlocks) {
-        nonDestructiveMovements.blocksCantBreak.add(mc.getBlockId(block));
+    // walking around is preferred, but digging through is allowed when it saves a long detour
+    const carefulMovements = makeMovements(bot, {digCost: 10, placeCost: 2});
+    for (let block of ['glass', 'glass_pane']) {
+        carefulMovements.blocksCantBreak.add(mc.getBlockId(block));
     }
-
-    const destructiveMovements = makeMovements(bot);
-
-    let final_movements = destructiveMovements;
-
-    const pathfind_timeout = 1000;
-    if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
-        final_movements = nonDestructiveMovements;
-        log(bot, `Found non-destructive path.`);
-    }
-    else if (await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status === 'success') {
-        log(bot, `Found destructive path.`);
-    }
-    else {
-        log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
-    }
+    let movements = carefulMovements;
 
     const doorCheckInterval = startDoorInterval(bot);
     // long or complicated paths need more thinking time than the default 5s
@@ -1463,9 +1567,9 @@ export async function goToGoal(bot, goal) {
     const max_attempts = 3;
     try {
         for (let attempt = 1; ; attempt++) {
-            bot.pathfinder.setMovements(final_movements);
+            bot.pathfinder.setMovements(movements);
             try {
-                await bot.pathfinder.goto(goal);
+                await gotoWithWatchdog(bot, goal);
                 return true;
             } catch (err) {
                 // don't retry if we were told to stop, or the goal was swapped out from under us
@@ -1473,16 +1577,139 @@ export async function goToGoal(bot, goal) {
                     !/GoalChanged|interrupt|stopped/i.test(err.name + ' ' + err.message);
                 if (!retryable) throw err;
                 log(bot, `Pathfinding hiccup (${err.message}), retrying...`);
-                // shake loose from whatever we were stuck on, then always allow digging
-                bot.clearControlStates();
-                bot.setControlState('jump', true);
-                await new Promise(resolve => setTimeout(resolve, 400));
-                bot.setControlState('jump', false);
-                final_movements = destructiveMovements;
+                if (bot.entity.isInWater) {
+                    // the pathfinder can't plan its way up out of deep water, swim out by hand
+                    await swimToShore(bot, goal);
+                }
+                else {
+                    // shake loose from whatever we were stuck on
+                    bot.clearControlStates();
+                    bot.setControlState('jump', true);
+                    await new Promise(resolve => setTimeout(resolve, 400));
+                    bot.setControlState('jump', false);
+                }
+                // and dig freely from now on
+                movements = makeMovements(bot);
             }
         }
     } finally {
         clearInterval(doorCheckInterval);
+    }
+}
+
+function isWaterBlock(block) {
+    if (!block) return false;
+    if (['water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'].includes(block.name)) return true;
+    return block.getProperties?.().waterlogged === true;
+}
+
+async function swimToShore(bot, goal=null) {
+    /* The pathfinder can't plan upward moves through water, so from below the surface of deep water it finds
+       no way out. Steer by hand instead: swim up and towards the nearest bank (preferring ones towards the goal)
+       and climb out, which works for banks up to one block above the water. Returns true if we got onto land. */
+    const pos = bot.entity.position;
+    const surface_y = () => {
+        let y = Math.floor(pos.y);
+        while (isWaterBlock(bot.blockAt(new Vec3(pos.x, y + 1, pos.z))) && y < pos.y + 32) y++;
+        return y;
+    };
+    const water_top = surface_y();
+    const goal_xz = goal && Number.isFinite(goal.x) && Number.isFinite(goal.z) ? goal : null;
+    const banks = bot.findBlocks({
+        matching: block => block && block.boundingBox === 'block' && !isWaterBlock(block),
+        useExtraInfo: block => {
+            const y = block.position.y;
+            if (y < water_top - 1 || y > water_top + 1) return false;
+            const a1 = bot.blockAt(block.position.offset(0, 1, 0));
+            const a2 = bot.blockAt(block.position.offset(0, 2, 0));
+            return a1 && a2 && a1.boundingBox === 'empty' && a2.boundingBox === 'empty' && !isWaterBlock(a1) && !isWaterBlock(a2);
+        },
+        maxDistance: 32,
+        count: 64,
+    });
+    if (banks.length === 0) {
+        log(bot, `Can't see any land to swim to.`);
+        return false;
+    }
+    const cost = p => p.distanceTo(pos) + (goal_xz ? 0.5 * Math.hypot(p.x - goal_xz.x, p.z - goal_xz.z) : 0);
+    banks.sort((a, b) => cost(a) - cost(b));
+    const target = banks[0].offset(0.5, 1, 0.5);
+    log(bot, `Swimming to land at ${banks[0].offset(0, 1, 0)}.`);
+
+    stopPathfinding(bot);
+    const start = Date.now();
+    let best = Infinity, last_progress = Date.now();
+    try {
+        while (Date.now() - start < 30000) {
+            if (bot.interrupt_code) return false;
+            const here = bot.entity.position;
+            const dist = Math.hypot(target.x - here.x, target.z - here.z);
+            if (!bot.entity.isInWater && bot.entity.onGround && (dist < 1.5 || here.y >= target.y - 0.5)) break;
+            // getting closer or rising up along the bank both count as progress
+            const remaining = dist + Math.max(0, target.y - here.y);
+            if (remaining < best - 0.3) {
+                best = remaining;
+                last_progress = Date.now();
+            }
+            else if (Date.now() - last_progress > 5000) {
+                log(bot, `Couldn't reach the bank.`);
+                return false;
+            }
+            await bot.lookAt(new Vec3(target.x, here.y + 0.5, target.z), true);
+            bot.setControlState('forward', dist > 0.3);
+            bot.setControlState('jump', true);
+            bot.setControlState('sprint', false);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    } finally {
+        bot.clearControlStates();
+    }
+    const ok = !bot.entity.isInWater;
+    if (ok) log(bot, `Got out of the water at ${bot.entity.position.floored()}.`);
+    return ok;
+}
+
+async function gotoWithWatchdog(bot, goal, noProgressMs=30000) {
+    /* bot.pathfinder.goto, but it settles as soon as the action is interrupted (the pathfinder only checks
+       its stop flag when it reaches the next node of a path, which may never happen), and gives up when the
+       bot hasn't gotten any closer to the goal for a while. */
+    const heuristic = () => {
+        try {
+            const h = goal.heuristic(bot.entity.position.floored());
+            return Number.isFinite(h) ? h : null;
+        } catch (err) {
+            return null;
+        }
+    };
+    let best = heuristic();
+    let last_progress = Date.now();
+    let gave_up = false;
+    const watchdog = setInterval(() => {
+        if (bot.interrupt_code) {
+            stopPathfinding(bot);
+            return;
+        }
+        const h = heuristic();
+        if (h !== null && (best === null || h < best - 0.5)) {
+            best = h;
+            last_progress = Date.now();
+        }
+        else if (Date.now() - last_progress > noProgressMs) {
+            gave_up = true;
+            stopPathfinding(bot);
+        }
+    }, 250);
+    try {
+        await bot.pathfinder.goto(goal);
+    } catch (err) {
+        if (gave_up) {
+            const stuck = new Error(`Made no progress towards the goal for ${Math.round(noProgressMs / 1000)} seconds`);
+            stuck.name = 'NoProgress';
+            throw stuck;
+        }
+        throw err;
+    } finally {
+        clearInterval(watchdog);
     }
 }
 
@@ -1581,7 +1808,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
             const itemId = bot.heldItem ? bot.heldItem.type : null;
             if (!targetBlock.canHarvest(itemId)) {
                 log(bot, `Pathfinding stopped: Cannot break ${targetBlock.name} with current tools.`);
-                bot.pathfinder.stop();
+                stopPathfinding(bot);
                 bot.stopDigging();
             }
         }
@@ -1890,7 +2117,7 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
     let goal = new pf.goals.GoalFollow(entity, distance);
     let inverted_goal = new pf.goals.GoalInvert(goal);
     bot.pathfinder.setMovements(makeMovements(bot));
-    await bot.pathfinder.goto(inverted_goal);
+    await gotoWithWatchdog(bot, inverted_goal);
     return true;
 }
 
@@ -1919,7 +2146,7 @@ export async function avoidEnemies(bot, distance=16) {
             await attackEntity(bot, enemy, false);
         }
     }
-    bot.pathfinder.stop();
+    stopPathfinding(bot);
     log(bot, `Moved ${distance} away from enemies.`);
     return true;
 }
@@ -2407,6 +2634,12 @@ export async function digDown(bot, distance = 10) {
             log(bot, 'Failed to dig block at position:' + targetBlock.position);
             return false;
         }
+        // drop into the hole before digging the next block. digging while still falling counts as digging in
+        // mid air (5x slower), so the server would reject the break and put the block back
+        for (let t = 0; t < 30; t++) {
+            if (bot.entity.onGround && bot.entity.position.y < targetBlock.position.y + 0.1) break;
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
     }
     log(bot, `Dug down ${distance} blocks.`);
     return true;
@@ -2459,7 +2692,7 @@ export async function pillarUp(bot, height=1) {
     const start_y = Math.floor(bot.entity.position.y);
     const target_y = start_y + height;
     let failures = 0;
-    bot.pathfinder.stop();
+    stopPathfinding(bot);
     while (Math.floor(bot.entity.position.y + 0.01) < target_y) {
         if (bot.interrupt_code) return false;
         if (failures > 4) {
@@ -2496,7 +2729,9 @@ export async function pillarUp(bot, height=1) {
         await bot.look(bot.entity.yaw, -Math.PI / 2, true);
         const y0 = bot.entity.position.y;
         bot.setControlState('jump', true);
-        for (let t = 0; t < 20 && bot.entity.position.y < y0 + 1.0; t++) await sleep(25);
+        // place near the top of the jump (max ~1.25). the server only knows where we were a tick or so ago,
+        // and rejects a block that would still overlap that position
+        for (let t = 0; t < 30 && bot.entity.position.y < y0 + 1.18; t++) await sleep(20);
         try {
             await bot.placeBlock(below, new Vec3(0, 1, 0));
         } catch (err) { /* the block often places even when this throws */ }
@@ -2807,7 +3042,7 @@ export async function enterPortal(bot, portalType='nether_portal') {
         const movements = makeMovements(bot, {destructive: false});
         movements.blocksToAvoid.delete(mc.getBlockId(portalType));
         bot.pathfinder.setMovements(movements);
-        await bot.pathfinder.goto(new pf.goals.GoalBlock(p.x, p.y, p.z));
+        await gotoWithWatchdog(bot, new pf.goals.GoalBlock(p.x, p.y, p.z), 15000);
     } catch (err) {
         // the pathfinder can be shy about portal blocks, so walk the last bit by hand
         await goToPosition(bot, p.x, p.y, p.z, 1);
@@ -2867,7 +3102,7 @@ export async function throwEnderEye(bot) {
         log(bot, `You have no ender_eye to throw.`);
         return null;
     }
-    bot.pathfinder.stop();
+    stopPathfinding(bot);
     await bot.equip(eye_item, 'hand');
     // look up at the sky so we don't accidentally use the eye on a block
     await bot.look(bot.entity.yaw, Math.PI / 4, true);
@@ -3121,16 +3356,17 @@ function getEntityHealth(entity) {
 // the dragon's hitbox is split into parts with their own entity ids. only the head takes full damage
 const DRAGON_HEAD = 1, DRAGON_BODY = 3;
 
-function dragonPartPositions(dragon, flip=false) {
-    /* Estimate where the head and body parts are, using the same offsets the server uses.
+function dragonPartPositions(dragon, flip=false, perched=false) {
+    /* Estimate the centers of the head and body parts, using the same offsets the server uses.
        mineflayer stores yaw as PI - notchian yaw (radians). flip mirrors the estimate in case
-       the yaw we see is the other way round from the server's. */
+       the yaw we see is the other way round from the server's. While perched, the 1x1 head hangs
+       a block below the dragon's position; in flight it's level with it. */
     let yaw = Math.PI - dragon.yaw;
     if (flip) yaw += Math.PI;
     const sin = Math.sin(yaw), cos = Math.cos(yaw);
     const p = dragon.position;
     return {
-        head: p.offset(sin * 6.5, 0.5, -cos * 6.5),
+        head: p.offset(sin * 6.5, perched ? -0.5 : 0.5, -cos * 6.5),
         body: p.offset(sin * 0.5, 1.5, -cos * 0.5),
     };
 }
@@ -3401,13 +3637,24 @@ export async function fightEnderDragon(bot) {
         const dist = bot.entity.position.distanceTo(dragon.position);
 
         if (perched) {
-            // go stand by its head (the only part that takes full damage) and hit it
-            const parts = dragonPartPositions(dragon, flip_yaw);
+            // go stand on the ground under its head (the only part that takes full damage) and hit it.
+            // never tower up to it: anything within a block of the head takes 10 damage
+            const parts = dragonPartPositions(dragon, flip_yaw, true);
             const eye = bot.entity.position.offset(0, 1.62, 0);
             const head_dist = eye.distanceTo(parts.head);
             if (head_dist > 3.5 && Date.now() - last_approach > 1000) {
-                bot.pathfinder.setMovements(makeMovements(bot, {destructive: false}));
-                bot.pathfinder.setGoal(new pf.goals.GoalNear(parts.head.x, portal_y + 1, parts.head.z, 2));
+                const movements = makeMovements(bot, {destructive: false});
+                movements.allow1by1towers = false;
+                movements.scafoldingBlocks = [];
+                bot.pathfinder.setMovements(movements);
+                let stand_y = groundAt(bot, parts.head.x, parts.head.z, parts.head.y - 2);
+                // standing there would put us inside the head's damage zone (1 block around it): hang back
+                const too_close = stand_y !== null && stand_y + 1.8 > parts.head.y - 1.5;
+                if (!too_close) {
+                    bot.pathfinder.setGoal(stand_y !== null
+                        ? new pf.goals.GoalNear(parts.head.x, stand_y, parts.head.z, 1)
+                        : new pf.goals.GoalNearXZ(parts.head.x, parts.head.z, 1));
+                }
                 last_approach = Date.now();
             }
             else if (head_dist <= 3.5) {
@@ -3556,6 +3803,7 @@ export async function collectBlazeRods(bot, num=7) {
     const count = () => world.getInventoryCounts(bot)['blaze_rod'] || 0;
     const start = Date.now();
     let waiting_since = null;
+    bot.modes.pause('unstuck'); // camping by a spawner isn't being stuck
     while (count() < num && Date.now() - start < 20 * 60 * 1000) {
         if (bot.interrupt_code) return false;
         const blaze = world.getNearestEntityWhere(bot, e => e.name === 'blaze', 32);
