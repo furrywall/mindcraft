@@ -955,9 +955,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 await bot.collectBlock.collect(block);
                 success = true;
             }
-            // the client clears a dug block right away, but the server puts it back if it refused the break.
-            // (a block that's back but dropped something is just sand or gravel falling into the gap)
-            if (success && !isLiquid && bot.blockAt(block.position)?.type === block.type && total_items() <= items_before) {
+            // the client clears a dug block right away, even if the server refused the break. if nothing was picked
+            // up, make sure it's really gone (a block that's back but dropped something is just sand or gravel
+            // falling into the gap)
+            if (success && !isLiquid && total_items() <= items_before && bot.game.gameMode !== 'creative' && !(await confirmBroken(bot, block))) {
                 success = false;
                 refused++;
                 refused_positions.add(block.position.toString());
@@ -1020,6 +1021,22 @@ export async function pickupNearbyItems(bot) {
 }
 
 
+async function confirmBroken(bot, block) {
+    /* mineflayer marks a dug block as air right away. A server that refuses the break (spawn protection, land
+       claims) doesn't necessarily correct that, and the bot goes on believing in a gap that isn't there. Click
+       the spot again: if the block is still there, the server answers with its real state.
+       Returns false if the block turned out to still be there. */
+    const pos = block.position;
+    if (bot.blockAt(pos)?.type === block.type) return false;
+    bot._client.write('block_dig', { status: 0, location: pos, face: 1, sequence: 0 });
+    bot._client.write('block_dig', { status: 1, location: pos, face: 1, sequence: 0 });
+    for (let t = 0; t < 8; t++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        if (bot.blockAt(pos)?.type === block.type) return false;
+    }
+    return true;
+}
+
 export async function breakBlockAt(bot, x, y, z) {
     /**
      * Break the block at the given position. Will use the bot's equipped item.
@@ -1059,7 +1076,22 @@ export async function breakBlockAt(bot, x, y, z) {
                 return false;
             }
         }
-        await bot.dig(block, true);
+        // a block that drops something was really broken. otherwise make sure the server didn't refuse it
+        let dropped = false;
+        const onDrop = entity => {
+            if (entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)) < 2) dropped = true;
+        };
+        bot.on('itemDrop', onDrop);
+        try {
+            await bot.dig(block, true);
+            for (let t = 0; t < 6 && !dropped; t++) await new Promise(resolve => setTimeout(resolve, 50));
+        } finally {
+            bot.removeListener('itemDrop', onDrop);
+        }
+        if (!dropped && bot.game.gameMode !== 'creative' && !(await confirmBroken(bot, block))) {
+            log(bot, `The server put the ${block.name} at ${block.position} back, you can't break blocks here (spawn protection or a land claim?).`);
+            return false;
+        }
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
     else {
@@ -1465,6 +1497,12 @@ export async function consume(bot, itemName="") {
     }
     if (!item) {
         log(bot, `You do not have any ${name} to eat.`);
+        return false;
+    }
+    // most food can't be eaten on a full stomach (golden apples, chorus fruit and drinks can)
+    const always = ['golden_apple', 'enchanted_golden_apple', 'chorus_fruit', 'milk_bucket', 'potion', 'honey_bottle', 'suspicious_stew'];
+    if (bot.food >= 20 && bot.game.gameMode !== 'creative' && !always.includes(item.name)) {
+        log(bot, `You're not hungry, so you can't eat ${item.name} right now.`);
         return false;
     }
     await bot.equip(item, 'hand');
@@ -3038,31 +3076,43 @@ export async function enterPortal(bot, portalType='nether_portal') {
 
     bot.modes.pause('unstuck');
     bot.modes.pause('elbow_room');
-    try {
-        const movements = makeMovements(bot, {destructive: false});
-        movements.blocksToAvoid.delete(mc.getBlockId(portalType));
-        bot.pathfinder.setMovements(movements);
-        await gotoWithWatchdog(bot, new pf.goals.GoalBlock(p.x, p.y, p.z), 15000);
-    } catch (err) {
-        // the pathfinder can be shy about portal blocks, so walk the last bit by hand
-        await goToPosition(bot, p.x, p.y, p.z, 1);
-        await bot.lookAt(p.offset(0.5, 0.5, 0.5));
-        bot.setControlState('forward', true);
-        await new Promise(resolve => setTimeout(resolve, 600));
-        bot.setControlState('forward', false);
-    }
-
-    // nether portals take ~4 seconds of standing still in survival
-    const start = Date.now();
-    while (Date.now() - start < 15000) {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const inPortal = () => [0, 1].some(dy => bot.blockAt(bot.entity.position.offset(0, dy, 0))?.name === portalType);
+    for (let attempt = 0; attempt < 3; attempt++) {
         if (bot.interrupt_code) return false;
-        if (getDimension(bot) !== start_dim) {
-            await new Promise(resolve => setTimeout(resolve, 2000)); // let chunks load
-            const pos = bot.entity.position.floored();
-            log(bot, `Went through the portal, now in the ${getDimension(bot)} at ${pos.x}, ${pos.y}, ${pos.z}.`);
-            return true;
+        if (inPortal() || attempt > 0) {
+            // standing in the portal you just came out of keeps it on cooldown: step out, wait, then go back in
+            try {
+                await moveAway(bot, 3);
+            } catch (err) { /* try from here */ }
+            await sleep(attempt === 0 ? 1500 : 5000);
         }
-        await new Promise(resolve => setTimeout(resolve, 250));
+        try {
+            const movements = makeMovements(bot, {destructive: false});
+            movements.blocksToAvoid.delete(mc.getBlockId(portalType));
+            bot.pathfinder.setMovements(movements);
+            await gotoWithWatchdog(bot, new pf.goals.GoalBlock(p.x, p.y, p.z), 15000);
+        } catch (err) {
+            // the pathfinder can be shy about portal blocks, so walk the last bit by hand
+            await goToPosition(bot, p.x, p.y, p.z, 1);
+            await bot.lookAt(p.offset(0.5, 0.5, 0.5));
+            bot.setControlState('forward', true);
+            await sleep(600);
+            bot.setControlState('forward', false);
+        }
+
+        // nether portals take ~4 seconds of standing still in survival
+        const start = Date.now();
+        while (Date.now() - start < 8000) {
+            if (bot.interrupt_code) return false;
+            if (getDimension(bot) !== start_dim) {
+                await sleep(2000); // let chunks load
+                const pos = bot.entity.position.floored();
+                log(bot, `Went through the portal, now in the ${getDimension(bot)} at ${pos.x}, ${pos.y}, ${pos.z}.`);
+                return true;
+            }
+            await sleep(250);
+        }
     }
     log(bot, `Stood in the portal but nothing happened.`);
     return false;
