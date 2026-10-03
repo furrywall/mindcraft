@@ -567,6 +567,30 @@ export const actionsList = [
         })
     },
     {
+        name: '!makeObsidian',
+        description: 'Make obsidian by pouring water on lava sources, then mine it. Needs a water_bucket (or bucket) and a diamond_pickaxe, and lava nearby.',
+        params: {'num': { type: 'int', description: 'How much obsidian to end up with.', domain: [1, 64] }},
+        perform: runAsAction(async (agent, num) => {
+            await skills.makeObsidian(agent.bot, num);
+        }, false, 15)
+    },
+    {
+        name: '!collectBlazeRods',
+        description: 'In the nether: find a fortress and kill blazes until you have enough blaze rods.',
+        params: {'num': { type: 'int', description: 'How many blaze rods to collect.', domain: [1, 64] }},
+        perform: runAsAction(async (agent, num) => {
+            await skills.collectBlazeRods(agent.bot, num);
+        }, false, 25)
+    },
+    {
+        name: '!collectEnderPearls',
+        description: 'Hunt endermen until you have enough ender pearls (eyes of ender count too).',
+        params: {'num': { type: 'int', description: 'How many ender pearls to collect.', domain: [1, 64] }},
+        perform: runAsAction(async (agent, num) => {
+            await skills.collectEnderPearls(agent.bot, num);
+        }, false, 25)
+    },
+    {
         name: '!fightEnderDragon',
         description: 'In the end: shoot the end crystals, then fight the ender dragon until it dies. Bring a bow, 64+ arrows, blocks, food, armor, and a good sword.',
         perform: runAsAction(async (agent) => {

@@ -378,13 +378,13 @@ function getGameProgress(bot) {
         {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
             next: 'Find diamond_ore around y=-58 with an iron_pickaxe, craft a diamond_pickaxe.'},
         {done: (has('obsidian', 10) && any('flint_and_steel', 'fire_charge')) || dimension !== 'overworld' || eyes >= 12, text: '10 obsidian and flint_and_steel',
-            next: 'Find lava pools, pour water on source lava to make obsidian, mine 10 with a diamond_pickaxe. Craft flint_and_steel from iron_ingot and flint (from gravel).'},
+            next: 'Find a lava pool and use !makeObsidian(10) (needs a water_bucket and diamond_pickaxe). Craft flint_and_steel from iron_ingot and flint (from gravel).'},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'
-                ? 'Find a nether fortress (!searchForBlock nether_bricks 512, or !explore), then kill blazes for blaze_rod (!attack blaze, or !shoot blaze).'
+                ? 'Use !collectBlazeRods(7). It finds a fortress and kills blazes; bring armor, food, and a bow if you have one.'
                 : 'Build a nether portal (!buildNetherPortal), go to the nether (!enterPortal nether_portal), find a fortress and kill blazes.'},
         {done: eye_potential >= 12 || count('ender_pearl') >= 12, text: 'Ender pearls (12)',
-            next: 'Kill endermen (!attack enderman, they are common in warped forests in the nether and at night in the overworld) or barter gold_ingot with piglins.'},
+            next: 'Use !collectEnderPearls(12). Endermen are common at night in the overworld and in warped forests in the nether.'},
         {done: eyes >= 12, text: '12 eyes of ender',
             next: 'Craft blaze_powder from blaze_rod, then craft ender_eye from ender_pearl and blaze_powder until you have 12.'},
         {done: dimension === 'the_end', text: 'Find the stronghold and open the end portal',

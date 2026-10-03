@@ -576,10 +576,12 @@ function simulateArrow(pitch, horizontal_dist) {
     return null;
 }
 
-function solveArrowPitch(horizontal_dist, dy) {
-    // lowest (flattest) pitch whose arc passes through the target, or null if out of range
+function solveArrowPitch(horizontal_dist, dy, high=false) {
+    // pitch whose arc passes through the target, or null if out of range. the flattest arc by default,
+    // or a lob that comes down steeply onto the target when high is set
     let prev = null;
-    for (let deg = -60; deg <= 60; deg += 0.25) {
+    const [from, to, step] = high ? [85, -60, -0.25] : [-60, 60, 0.25];
+    for (let deg = from; high ? deg >= to : deg <= to; deg += step) {
         const pitch = deg * Math.PI / 180;
         const res = simulateArrow(pitch, horizontal_dist);
         if (!res) { prev = null; continue; }
@@ -594,13 +596,32 @@ function solveArrowPitch(horizontal_dist, dy) {
     return null;
 }
 
+function arrowPath(pitch, horizontal_dist) {
+    // [{h, y}] points along the flight until it covers horizontal_dist, relative to the shooter
+    const points = [];
+    let vh = Math.cos(pitch) * ARROW_SPEED;
+    let vy = Math.sin(pitch) * ARROW_SPEED;
+    let h = 0, y = 0;
+    for (let tick = 0; tick < 200 && h < horizontal_dist; tick++) {
+        // sub-step so we don't skip over thin obstacles like a pillar edge or iron bars
+        for (let k = 0; k < 8; k++) {
+            h += vh / 8;
+            y += vy / 8;
+            points.push({h, y});
+        }
+        vh *= ARROW_DRAG;
+        vy = vy * ARROW_DRAG - ARROW_GRAVITY;
+    }
+    return points;
+}
+
 function aimPoint(entity) {
     if (entity.name === 'end_crystal') return entity.position.offset(0, 1, 0);
     if (entity.name === 'ender_dragon') return entity.position.offset(0, 1.5, 0);
     return entity.position.offset(0, (entity.height || 1) * 0.6, 0);
 }
 
-async function fireArrowAt(bot, entity) {
+async function fireArrowAt(bot, entity, {high=false} = {}) {
     /* Draw the bow fully while tracking the target, then release with gravity and target movement accounted for. */
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const bow = bot.inventory.items().find(i => i.name === 'bow');
@@ -619,7 +640,7 @@ async function fireArrowAt(bot, entity) {
             last_time = now;
         }
         const eye = bot.entity.position.offset(0, bot.entity.height * 0.9 - 0.1, 0);
-        const solve = (t) => solveArrowPitch(Math.hypot(t.x - eye.x, t.z - eye.z), t.y - eye.y);
+        const solve = (t) => solveArrowPitch(Math.hypot(t.x - eye.x, t.z - eye.z), t.y - eye.y, high);
         let target = aimPoint(entity);
         let solution = solve(target);
         for (let i = 0; i < 3 && solution; i++) { // lead the target by its flight time, refining a few times
@@ -651,12 +672,13 @@ async function fireArrowAt(bot, entity) {
     return true;
 }
 
-export async function shootEntity(bot, entity, maxShots=8) {
+export async function shootEntity(bot, entity, maxShots=8, high=false) {
     /**
      * Shoot an entity with a bow until it dies or you run out of shots. Needs a bow and arrows. Use for end crystals, blazes, ghasts, the ender dragon, or anything out of reach.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {Entity} entity, the entity to shoot.
      * @param {number} maxShots, the maximum number of arrows to fire. Defaults to 8.
+     * @param {boolean} high, lob the arrows in a high arc so they come down on the target, e.g. over a wall. Defaults to false.
      * @returns {Promise<boolean>} true if the entity died, false otherwise.
      * @example
      * let crystal = world.getNearestEntityWhere(bot, e => e.name === 'end_crystal', 64);
@@ -675,7 +697,7 @@ export async function shootEntity(bot, entity, maxShots=8) {
             log(bot, `Ran out of arrows.`);
             break;
         }
-        const fired = await fireArrowAt(bot, entity);
+        const fired = await fireArrowAt(bot, entity, {high});
         if (!fired) break;
         await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -2895,114 +2917,148 @@ export async function throwEnderEye(bot) {
     return {origin, direction, close};
 }
 
+// bearings from every eye throw this session, so each new throw sharpens the estimate
+const _strongholdRays = [];
+
+function intersectRays(rays) {
+    /* Least-squares point closest to all bearing lines. Returns null if they're too close to parallel. */
+    let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+    for (const {origin, direction: d} of rays) {
+        // projector onto the line's normal: I - d d^T
+        const n11 = 1 - d.x * d.x, n12 = -d.x * d.z, n22 = 1 - d.z * d.z;
+        a11 += n11; a12 += n12; a22 += n22;
+        b1 += n11 * origin.x + n12 * origin.z;
+        b2 += n12 * origin.x + n22 * origin.z;
+    }
+    const det = a11 * a22 - a12 * a12;
+    if (Math.abs(det) < 1e-4 * rays.length) return null;
+    const x = (a22 * b1 - a12 * b2) / det;
+    const z = (a11 * b2 - a12 * b1) / det;
+    // must be in front of the throws, not behind them
+    for (const {origin, direction: d} of rays) {
+        if ((x - origin.x) * d.x + (z - origin.z) * d.z < 0) return null;
+    }
+    return new Vec3(Math.round(x), 0, Math.round(z));
+}
+
+async function recordEyeThrow(bot) {
+    const result = await throwEnderEye(bot);
+    if (result?.direction && !result.close) _strongholdRays.push({origin: result.origin, direction: result.direction});
+    return result;
+}
+
+function findPortalFrame(bot) {
+    // the server sends whole chunks, underground included, so the portal room is often visible from far away
+    return world.getNearestBlock(bot, 'end_portal_frame', 192);
+}
+
 export async function locateStronghold(bot) {
     /**
-     * Triangulate the stronghold's location by throwing two eyes of ender from different spots. Needs at least 2 ender_eye (they may be picked back up).
+     * Estimate the stronghold's location by throwing eyes of ender from different spots and intersecting their bearings. Each throw this session improves the estimate. Needs ender_eye (they are usually picked back up).
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @returns {Promise<Vec3|null>} estimated stronghold x, z position (y is 0), or null if it failed.
      * @example
      * let stronghold = await skills.locateStronghold(bot);
      **/
-    const first = await throwEnderEye(bot);
+    const here = () => {
+        const p = bot.entity.position.floored();
+        log(bot, `The stronghold is right around ${p.x}, ${p.z}. Dig down to find it.`);
+        return new Vec3(p.x, 0, p.z);
+    };
+    const first = await recordEyeThrow(bot);
     if (!first) return null;
-    if (first.close || !first.direction) {
-        const p = bot.entity.position.floored();
-        log(bot, `The stronghold is right around ${p.x}, ${p.z}. Dig down to find it.`);
-        return new Vec3(p.x, 0, p.z);
+    if (first.close || !first.direction) return here();
+
+    let estimate = intersectRays(_strongholdRays);
+    if (!estimate || _strongholdRays.length < 2) {
+        // need a second bearing from somewhere off to the side, the wider the baseline the better
+        const d1 = first.direction;
+        const side = new Vec3(-d1.z, 0, d1.x);
+        const target = first.origin.plus(side.scaled(100));
+        await travelTo(bot, target.x, target.z, 8);
+        if (bot.interrupt_code) return null;
+        const second = await recordEyeThrow(bot);
+        if (!second) return null;
+        if (second.close || !second.direction) return here();
+        estimate = intersectRays(_strongholdRays);
     }
-    // walk sideways to get a second bearing, the wider the baseline the better the estimate
-    const d1 = first.direction;
-    const side = new Vec3(-d1.z, 0, d1.x);
-    const p1 = first.origin;
-    const target = p1.plus(side.scaled(80));
-    await travelTo(bot, target.x, target.z, 8);
-    if (bot.interrupt_code) return null;
-    const second = await throwEnderEye(bot);
-    if (!second) return null;
-    if (second.close || !second.direction) {
-        const p = bot.entity.position.floored();
-        log(bot, `The stronghold is right around ${p.x}, ${p.z}. Dig down to find it.`);
-        return new Vec3(p.x, 0, p.z);
+    if (!estimate) {
+        // nearly parallel bearings mean it's far away; strongholds are usually 1300-2800 blocks from spawn
+        const last = _strongholdRays[_strongholdRays.length - 1];
+        estimate = last.origin.plus(last.direction.scaled(1000)).floored();
+        estimate.y = 0;
+        log(bot, `The eyes all point the same way, so the stronghold is far. Heading roughly 1000 blocks that way.`);
     }
-    // intersect the two rays: p1 + t*d1 = p2 + s*d2
-    const d2 = second.direction;
-    const p2 = second.origin;
-    const denom = d1.x * d2.z - d1.z * d2.x;
-    let estimate;
-    if (Math.abs(denom) < 0.005) {
-        // nearly parallel bearings mean it's far; strongholds are usually ~1500 blocks out
-        estimate = p2.plus(d2.scaled(1000));
-        log(bot, `Both eyes pointed the same way, the stronghold is far. Heading roughly 1000 blocks that way.`);
-    }
-    else {
-        const t = ((p2.x - p1.x) * d2.z - (p2.z - p1.z) * d2.x) / denom;
-        if (t < 0) {
-            estimate = p2.plus(d2.scaled(1000));
-        } else {
-            estimate = p1.plus(d1.scaled(t));
+    const dist = Math.round(Math.hypot(estimate.x - bot.entity.position.x, estimate.z - bot.entity.position.z));
+    log(bot, `Estimated stronghold location from ${_strongholdRays.length} throws: x=${estimate.x}, z=${estimate.z} (${dist} blocks away).`);
+    return estimate;
+}
+
+async function digTowards(bot, target) {
+    /* Get down to a block far below: path there directly, falling back to digging down in steps. */
+    for (let attempt = 0; attempt < 6; attempt++) {
+        if (bot.interrupt_code) return false;
+        const reached = await goToPosition(bot, target.x, target.y + 1, target.z, 3);
+        if (reached) return true;
+        const dy = bot.entity.position.y - (target.y + 1);
+        const horizontal = Math.hypot(bot.entity.position.x - target.x, bot.entity.position.z - target.z);
+        if (dy > 2 && horizontal < 24) {
+            const dug = await digDown(bot, Math.min(10, Math.ceil(dy)));
+            if (!dug) await moveAway(bot, 4); // lava or a drop below, try another hole
+        }
+        else if (horizontal >= 24) {
+            await travelTo(bot, target.x, target.z, 8);
         }
     }
-    estimate = new Vec3(Math.round(estimate.x), 0, Math.round(estimate.z));
-    const dist = Math.round(Math.hypot(estimate.x - bot.entity.position.x, estimate.z - bot.entity.position.z));
-    log(bot, `Estimated stronghold location: x=${estimate.x}, z=${estimate.z} (${dist} blocks away).`);
-    return estimate;
+    return false;
 }
 
 export async function goToStronghold(bot) {
     /**
-     * Find the stronghold with eyes of ender, travel there, and dig down until the end portal room is found. Needs several ender_eye.
+     * Find the stronghold with eyes of ender, travel there, and get down to the end portal room. Needs several ender_eye (12 are needed to open the portal).
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @returns {Promise<boolean>} true if the end portal frame was found and reached, false otherwise.
      * @example
      * await skills.goToStronghold(bot);
      **/
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    let estimate = null;
-    for (let round = 0; round < 4; round++) {
+    let frame = findPortalFrame(bot);
+    for (let round = 0; round < 6 && !frame; round++) {
         if (bot.interrupt_code) return false;
-        if (world.getNearestBlock(bot, 'end_portal_frame', 64)) break;
-        estimate = await locateStronghold(bot);
+        const estimate = await locateStronghold(bot);
         if (!estimate) return false;
-        const dist = Math.hypot(estimate.x - bot.entity.position.x, estimate.z - bot.entity.position.z);
-        if (dist < 24) break;
-        // on long trips stop partway and re-measure, the first estimate is rough
-        if (dist > 600) {
-            const pos = bot.entity.position;
-            const f = 500 / dist;
-            await travelTo(bot, pos.x + (estimate.x - pos.x) * f, pos.z + (estimate.z - pos.z) * f, 16);
-        }
-        else {
-            await travelTo(bot, estimate.x, estimate.z, 8);
-        }
-    }
-    if (bot.interrupt_code) return false;
-
-    // dig down in steps, looking for the portal room as we go
-    for (let attempt = 0; attempt < 8; attempt++) {
-        const frame = world.getNearestBlock(bot, 'end_portal_frame', 64);
-        if (frame) {
-            log(bot, `Found the end portal frame at ${frame.position}!`);
-            const reached = await goToPosition(bot, frame.position.x, frame.position.y + 1, frame.position.z, 3);
-            if (reached) {
-                log(bot, `Reached the end portal. Use activateEndPortal to fill it with eyes of ender.`);
-                return true;
+        frame = findPortalFrame(bot);
+        if (frame) break;
+        const pos = bot.entity.position;
+        const dist = Math.hypot(estimate.x - pos.x, estimate.z - pos.z);
+        if (dist < 24) {
+            // the eyes lead to the stronghold's entrance, the portal room can be ~100 blocks away inside it.
+            // dig down into the stronghold, where more of it comes into view
+            await digDown(bot, Math.max(4, Math.floor(pos.y) - 30));
+            frame = findPortalFrame(bot);
+            if (!frame) {
+                const bricks = world.getNearestBlock(bot, 'stone_bricks', 48);
+                if (bricks) await goToPosition(bot, bricks.position.x, bricks.position.y + 1, bricks.position.z, 2);
+                frame = findPortalFrame(bot);
             }
-        }
-        const bricks = world.getNearestBlock(bot, 'stone_bricks', 32);
-        if (bricks && bot.entity.position.distanceTo(bricks.position) > 4 && attempt % 2 === 0) {
-            // we're in or next to the stronghold, wander into it to load the portal room
-            await goToPosition(bot, bricks.position.x, bricks.position.y + 1, bricks.position.z, 2);
+            if (!frame) await explore(bot, 60);
             continue;
         }
-        if (bot.entity.position.y > 0) {
-            const dug = await digDown(bot, 12);
-            if (!dug) await moveAway(bot, 6); // lava or a drop, try a different hole
-        } else {
-            await explore(bot, 40);
-        }
-        await sleep(200);
+        // stop partway on long trips and throw again, every throw makes the estimate better
+        const leg = Math.min(dist, 400);
+        await travelTo(bot, pos.x + (estimate.x - pos.x) * leg / dist, pos.z + (estimate.z - pos.z) * leg / dist, 16);
+        frame = findPortalFrame(bot);
     }
-    log(bot, `Couldn't find the end portal room. Throw another eye of ender to re-check the direction.`);
+    if (bot.interrupt_code) return false;
+    if (!frame) {
+        log(bot, `Couldn't find the end portal room. Throw more eyes of ender (locateStronghold) to narrow it down.`);
+        return false;
+    }
+    log(bot, `Found the end portal frame at ${frame.position}! Heading there.`);
+    if (await digTowards(bot, frame.position)) {
+        log(bot, `Reached the end portal. Use activateEndPortal to fill it with eyes of ender.`);
+        return true;
+    }
+    log(bot, `Found the portal at ${frame.position} but couldn't get to it.`);
     return false;
 }
 
@@ -3062,7 +3118,22 @@ function getEntityHealth(entity) {
     return typeof h === 'number' ? h : null;
 }
 
-const DRAGON_PARTS = [1, 0, 3]; // head, main entity, body
+// the dragon's hitbox is split into parts with their own entity ids. only the head takes full damage
+const DRAGON_HEAD = 1, DRAGON_BODY = 3;
+
+function dragonPartPositions(dragon, flip=false) {
+    /* Estimate where the head and body parts are, using the same offsets the server uses.
+       mineflayer stores yaw as PI - notchian yaw (radians). flip mirrors the estimate in case
+       the yaw we see is the other way round from the server's. */
+    let yaw = Math.PI - dragon.yaw;
+    if (flip) yaw += Math.PI;
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const p = dragon.position;
+    return {
+        head: p.offset(sin * 6.5, 0.5, -cos * 6.5),
+        body: p.offset(sin * 0.5, 1.5, -cos * 0.5),
+    };
+}
 
 function findExitPortalTop(bot) {
     // the bedrock fountain in the middle of the main island marks where the dragon perches
@@ -3071,6 +3142,142 @@ function findExitPortalTop(bot) {
         if (b && b.name === 'bedrock') return y;
     }
     return null;
+}
+
+function getPillarInfo(bot, crystal) {
+    /* The crystal sits on a bedrock block on top of an obsidian pillar, sometimes inside an iron bar cage. */
+    const cx = Math.floor(crystal.position.x), cz = Math.floor(crystal.position.z);
+    const cy = Math.floor(crystal.position.y);
+    let top = cy - 1; // y of the bedrock block
+    for (let y = cy; y > cy - 4; y--) {
+        if (bot.blockAt(new Vec3(cx, y, cz))?.name === 'bedrock') { top = y; break; }
+    }
+    let radius = 1;
+    for (let r = 1; r <= 8; r++) {
+        if (bot.blockAt(new Vec3(cx + r, top - 1, cz))?.name === 'obsidian') radius = r;
+        else break;
+    }
+    const bars = [];
+    for (let dx = -3; dx <= 3; dx++)
+        for (let dz = -3; dz <= 3; dz++)
+            for (let dy = 0; dy <= 4; dy++) {
+                const b = bot.blockAt(new Vec3(cx + dx, top + dy, cz + dz));
+                if (b?.name === 'iron_bars') bars.push(b);
+            }
+    return {center: new Vec3(cx + 0.5, top, cz + 0.5), top, radius, bars};
+}
+
+function groundAt(bot, x, z, below_y) {
+    // y to stand at for column x,z (first solid block with 2 air above), searching down from below_y
+    for (let y = Math.floor(below_y); y > 0; y--) {
+        const b = bot.blockAt(new Vec3(Math.floor(x), y, Math.floor(z)));
+        const a1 = bot.blockAt(new Vec3(Math.floor(x), y + 1, Math.floor(z)));
+        const a2 = bot.blockAt(new Vec3(Math.floor(x), y + 2, Math.floor(z)));
+        if (b && b.boundingBox === 'block' && b.name !== 'bedrock' && isAirLike(a1) && isAirLike(a2)) return y + 1;
+    }
+    return null;
+}
+
+function crystalShotClear(info, crystal, stand, high) {
+    /* Trace the arrow from a standing spot to the crystal and check it doesn't clip the pillar's
+       top edge or any remaining cage bars on the way. */
+    const eye = new Vec3(stand.x, stand.y + 1.52, stand.z);
+    const target = crystal.position.offset(0, 1, 0);
+    const dist = Math.hypot(target.x - eye.x, target.z - eye.z);
+    const sol = solveArrowPitch(dist, target.y - eye.y, high);
+    if (!sol) return false;
+    const dir_x = (target.x - eye.x) / dist, dir_z = (target.z - eye.z) / dist;
+    const edge = info.radius + 0.5;
+    const bar_cells = new Set(info.bars.map(b => `${b.position.x},${b.position.y},${b.position.z}`));
+    const c = crystal.position;
+    for (const {h, y} of arrowPath(sol.pitch, dist + 1.5)) {
+        const px = eye.x + dir_x * h, pz = eye.z + dir_z * h, py = eye.y + y;
+        // reached the crystal's 2x2x2 hitbox
+        if (Math.abs(px - c.x) < 1 && Math.abs(pz - c.z) < 1 && py >= c.y && py <= c.y + 2) return true;
+        if (Math.hypot(px - info.center.x, pz - info.center.z) < edge && py < info.top + 0.1) return false;
+        if (bar_cells.has(`${Math.floor(px)},${Math.floor(py)},${Math.floor(pz)}`)) return false;
+    }
+    return false;
+}
+
+function planCrystalShot(bot, crystal, info, angles=null) {
+    /* Find somewhere on the island to stand where an arrow (flat or lobbed) can reach the crystal. */
+    const to_center = Math.atan2(-info.center.z, -info.center.x); // pillars ring the island, aim back inward
+    const base_angles = angles ?? [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05].map(a => to_center + a);
+    const options = [];
+    for (const angle of base_angles) {
+        for (let dist = 14; dist <= 70; dist += 4) {
+            const x = info.center.x + Math.cos(angle) * dist;
+            const z = info.center.z + Math.sin(angle) * dist;
+            const y = groundAt(bot, x, z, info.top - 2);
+            if (y === null || y < 40) continue; // no island here
+            for (const high of [false, true]) {
+                if (crystalShotClear(info, crystal, {x, y, z}, high)) {
+                    const cost = Math.hypot(x - bot.entity.position.x, z - bot.entity.position.z) + (high ? 10 : 0);
+                    options.push({x, y, z, high, cost});
+                    break;
+                }
+            }
+        }
+    }
+    options.sort((a, b) => a.cost - b.cost);
+    return options[0] ?? null;
+}
+
+async function shootCrystal(bot, crystal, angles=null) {
+    const info = getPillarInfo(bot, crystal);
+    const plan = planCrystalShot(bot, crystal, info, angles);
+    if (!plan) {
+        log(bot, `Couldn't find a spot with a clear shot at the crystal at ${crystal.position.floored()}.`);
+        return false;
+    }
+    try {
+        await goToGoal(bot, new pf.goals.GoalNear(plan.x, plan.y, plan.z, 1.5));
+    } catch (err) { /* try from wherever we got to */ }
+    if (bot.interrupt_code || !isAlive(bot, crystal)) return !isAlive(bot, crystal);
+    // re-check the arc from where we actually ended up
+    const here = bot.entity.position;
+    const high = crystalShotClear(info, crystal, here, false) ? false : plan.high;
+    return await shootEntity(bot, crystal, 6, high);
+}
+
+async function openCrystalCage(bot, crystal) {
+    /* Tower up beside the pillar, break the iron bars facing us, then dig back down.
+       Returns the direction (angle) of the opening so we can shoot through it from the ground. */
+    const info = getPillarInfo(bot, crystal);
+    if (info.bars.length === 0) return null;
+    if (!getScaffoldItem(bot)) {
+        log(bot, `Need blocks (cobblestone, end_stone...) to tower up to the caged crystal.`);
+        return null;
+    }
+    const angle = Math.atan2(-info.center.z, -info.center.x); // the island side of the pillar
+    const bx = info.center.x + Math.cos(angle) * (info.radius + 1.2);
+    const bz = info.center.z + Math.sin(angle) * (info.radius + 1.2);
+    const by = groundAt(bot, bx, bz, info.top - 2);
+    if (by === null) {
+        log(bot, `No ground next to the pillar to build up from.`);
+        return null;
+    }
+    log(bot, `Crystal at ${crystal.position.floored()} is caged. Towering up to break the bars.`);
+    const reached = await goToPosition(bot, Math.floor(bx) + 0.5, by, Math.floor(bz) + 0.5, 0.5);
+    if (!reached || bot.interrupt_code) return null;
+    const start_y = Math.floor(bot.entity.position.y);
+    // feet level with the crystal's base puts our eyes level with the bars
+    if (!(await pillarUp(bot, info.top + 1 - start_y))) return null;
+
+    const eye = () => bot.entity.position.offset(0, 1.62, 0);
+    const reachable = getPillarInfo(bot, crystal).bars
+        .filter(b => eye().distanceTo(b.position.offset(0.5, 0.5, 0.5)) < 4.5)
+        .sort((a, b) => eye().distanceTo(a.position) - eye().distanceTo(b.position));
+    let broken = 0;
+    for (const bar of reachable) {
+        if (bot.interrupt_code) return null;
+        if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
+        if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
+    }
+    log(bot, `Broke ${broken} iron bars. Climbing back down before shooting, crystals explode.`);
+    await digDown(bot, Math.floor(bot.entity.position.y) - start_y);
+    return broken > 0 ? angle : null;
 }
 
 export async function fightEnderDragon(bot) {
@@ -3104,12 +3311,13 @@ export async function fightEnderDragon(bot) {
     }
     const portal_y = findExitPortalTop(bot) ?? 64;
 
-    // 2. destroy the end crystals, they heal the dragon
-    const caged = new Set();
-    for (let round = 0; round < 25; round++) {
+    // 2. destroy the end crystals, they heal the dragon. caged ones get their bars broken first
+    const given_up = new Set();
+    const cage_opened = new Map(); // crystal id -> angle of the gap we made
+    for (let round = 0; round < 30; round++) {
         if (bot.interrupt_code) return false;
         const crystals = Object.values(bot.entities)
-            .filter(e => e.name === 'end_crystal' && !caged.has(e.id) && Math.hypot(e.position.x, e.position.z) < 80)
+            .filter(e => e.name === 'end_crystal' && !given_up.has(e.id) && Math.hypot(e.position.x, e.position.z) < 80)
             .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
         if (crystals.length === 0) break;
         if (!hasBowAndArrows(bot)) {
@@ -3117,31 +3325,38 @@ export async function fightEnderDragon(bot) {
             break;
         }
         const crystal = crystals[0];
-        // shoot from the ground near the pillar but not right under it, so the arrow arc is reasonable
-        const horizontal = Math.hypot(crystal.position.x - bot.entity.position.x, crystal.position.z - bot.entity.position.z);
-        if (horizontal > 40 || horizontal < 8) {
-            const away = new Vec3(crystal.position.x, 0, crystal.position.z).scaled(1 / Math.max(1, Math.hypot(crystal.position.x, crystal.position.z)));
-            // stand on the island's inner side of the pillar
-            const stand = crystal.position.minus(away.scaled(18));
-            try {
-                await goToGoal(bot, new pf.goals.GoalNearXZ(stand.x, stand.z, 4));
-            } catch (err) { /* shoot from where we are */ }
+        const info = getPillarInfo(bot, crystal);
+        let angles = null;
+        if (cage_opened.has(crystal.id)) {
+            // shoot through the gap we made: stay close to that direction
+            const a = cage_opened.get(crystal.id);
+            angles = [a, a + 0.15, a - 0.15];
         }
-        if (!isAlive(bot, crystal)) continue;
-        const destroyed = await shootEntity(bot, crystal, 5);
+        else if (info.bars.length > 0 && !planCrystalShot(bot, crystal, info)) {
+            const gap = await openCrystalCage(bot, crystal);
+            if (gap === null) {
+                log(bot, `Couldn't open the cage around the crystal at ${crystal.position.floored()}.`);
+                given_up.add(crystal.id);
+                continue;
+            }
+            cage_opened.set(crystal.id, gap);
+            continue;
+        }
+        const destroyed = await shootCrystal(bot, crystal, angles);
         if (!destroyed && isAlive(bot, crystal)) {
-            log(bot, `Couldn't hit the crystal at ${crystal.position.floored()}, it's probably caged with iron bars.`);
-            caged.add(crystal.id);
+            log(bot, `Missed the crystal at ${crystal.position.floored()} too many times, moving on.`);
+            given_up.add(crystal.id);
         }
     }
-    if (caged.size > 0)
-        log(bot, `${caged.size} crystals left (caged). The dragon can still be killed but will heal near them.`);
+    if (given_up.size > 0)
+        log(bot, `${given_up.size} crystals are still up. The dragon can still be killed but will heal near them.`);
 
     // 3. fight the dragon
     const start = Date.now();
     let last_attack = 0;
     let last_shot = 0;
-    let part_index = 0;
+    let flip_yaw = false;
+    let missed_head_hits = 0;
     let last_seen = Date.now();
     let last_approach = 0;
     let last_health = null;
@@ -3186,27 +3401,40 @@ export async function fightEnderDragon(bot) {
         const dist = bot.entity.position.distanceTo(dragon.position);
 
         if (perched) {
-            // run in and hit it, its head is the weak spot
-            if (dist > 5 && Date.now() - last_approach > 1500) {
+            // go stand by its head (the only part that takes full damage) and hit it
+            const parts = dragonPartPositions(dragon, flip_yaw);
+            const eye = bot.entity.position.offset(0, 1.62, 0);
+            const head_dist = eye.distanceTo(parts.head);
+            if (head_dist > 3.5 && Date.now() - last_approach > 1000) {
                 bot.pathfinder.setMovements(makeMovements(bot, {destructive: false}));
-                bot.pathfinder.setGoal(new pf.goals.GoalNear(dragon.position.x, portal_y + 1, dragon.position.z, 3));
+                bot.pathfinder.setGoal(new pf.goals.GoalNear(parts.head.x, portal_y + 1, parts.head.z, 2));
                 last_approach = Date.now();
             }
-            else if (dist <= 5) {
+            else if (head_dist <= 3.5) {
                 bot.pathfinder.setGoal(null);
             }
             await equipHighestAttack(bot);
             const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
-            if (dist < 9 && Date.now() - last_attack > cooldown) {
-                // the dragon's hitbox is split into parts: head is id+1 (full damage), body is id+3,
-                // and hitting the main entity counts as the body. we can't see the parts, so if a swing
-                // didn't lower its health, try the next one
-                if (last_health !== null && health !== null && health >= last_health)
-                    part_index = (part_index + 1) % DRAGON_PARTS.length;
-                last_health = health;
-                await bot.lookAt(dragon.position.offset(0, 1, 0), true);
-                bot.attack({id: dragon.id + DRAGON_PARTS[part_index], position: dragon.position});
-                last_attack = Date.now();
+            if (Date.now() - last_attack > cooldown) {
+                // the server accepts hits up to ~6 blocks from a part's hitbox
+                let target = null;
+                if (head_dist < 5.5) target = {id: dragon.id + DRAGON_HEAD, position: parts.head};
+                else if (eye.distanceTo(parts.body) < 6) target = {id: dragon.id + DRAGON_BODY, position: parts.body};
+                if (target) {
+                    if (target.id === dragon.id + DRAGON_HEAD && last_health !== null && health !== null) {
+                        // head swings that don't hurt it mean our facing estimate is mirrored
+                        if (health >= last_health) missed_head_hits++;
+                        else missed_head_hits = 0;
+                        if (missed_head_hits >= 2) {
+                            flip_yaw = !flip_yaw;
+                            missed_head_hits = 0;
+                        }
+                    }
+                    last_health = health;
+                    await bot.lookAt(target.position, true);
+                    bot.attack(target);
+                    last_attack = Date.now();
+                }
             }
         }
         else {
@@ -3226,4 +3454,180 @@ export async function fightEnderDragon(bot) {
     }
     log(bot, `Fought the dragon for 15 minutes without killing it.`);
     return false;
+}
+
+// ----------------------------------------------------------------------------------------------
+// Gathering the end-game materials: obsidian, blaze rods, ender pearls
+// ----------------------------------------------------------------------------------------------
+
+function isPortalObsidian(bot, block) {
+    // don't tear down a nether portal we built
+    return [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+        .some(([x, y, z]) => bot.blockAt(block.position.offset(x, y, z))?.name === 'nether_portal');
+}
+
+async function mineSafeObsidian(bot, num) {
+    // mine obsidian that won't drop its item into lava and isn't part of a portal
+    const unsafe = world.getNearestBlocks(bot, ['obsidian'], 48, 200).filter(b => {
+        const below = bot.blockAt(b.position.offset(0, -1, 0));
+        return below?.name === 'lava' || isPortalObsidian(bot, b);
+    }).map(b => b.position);
+    const available = world.getNearestBlocks(bot, ['obsidian'], 48, 200).length - unsafe.length;
+    if (available <= 0) return false;
+    return await collectBlock(bot, 'obsidian', Math.min(num, available), unsafe);
+}
+
+export async function makeObsidian(bot, num=10) {
+    /**
+     * Make and mine obsidian by pouring water onto lava source blocks. Needs a water_bucket (or a bucket and nearby water) and a diamond_pickaxe.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} num, how much obsidian to end up with. Defaults to 10.
+     * @returns {Promise<boolean>} true if you have the requested obsidian, false otherwise.
+     * @example
+     * await skills.makeObsidian(bot, 10);
+     **/
+    const count = () => world.getInventoryCounts(bot)['obsidian'] || 0;
+    const inv = world.getInventoryCounts(bot);
+    if (!inv['diamond_pickaxe'] && !inv['netherite_pickaxe']) {
+        log(bot, `Need a diamond_pickaxe to mine obsidian.`);
+        return false;
+    }
+    if (getDimension(bot) === 'the_nether') {
+        log(bot, `Water evaporates in the nether, make obsidian in the overworld.`);
+        return false;
+    }
+    const tried = [];
+    for (let attempt = 0; attempt < 25 && count() < num; attempt++) {
+        if (bot.interrupt_code) return false;
+        // use up obsidian that's already here first
+        if (await mineSafeObsidian(bot, num - count())) continue;
+
+        if (!bot.inventory.items().some(i => i.name === 'water_bucket')) {
+            if (!bot.inventory.items().some(i => i.name === 'bucket')) {
+                log(bot, `Need a water_bucket, or a bucket (3 iron_ingot) to fill with water.`);
+                return false;
+            }
+            log(bot, `Filling a bucket with water.`);
+            if (!(await collectBlock(bot, 'water', 1))) {
+                log(bot, `Couldn't find water to fill the bucket.`);
+                return false;
+            }
+        }
+        // lava sources with other lava next to them turn into the most obsidian per pour
+        const lava = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 64, 40)
+            .filter(b => !tried.some(p => p.distanceTo(b.position) < 3))
+            .filter(b => isAirLike(bot.blockAt(b.position.offset(0, 1, 0))));
+        if (lava.length === 0) {
+            log(bot, `No lava source blocks nearby. Explore to find a lava pool (common in caves below y=0 and on the surface).`);
+            return false;
+        }
+        const target = lava[0];
+        tried.push(target.position);
+        log(bot, `Pouring water onto lava at ${target.position}.`);
+        await useToolOnBlock(bot, 'water_bucket', target);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        // pick the water back up so it doesn't flood everything (and we can reuse it)
+        const water = world.getNearestBlocksWhere(bot, b => b.name === 'water' && b.metadata === 0, 8, 5)
+            .find(b => b.position.distanceTo(target.position) < 3);
+        if (water) {
+            await useToolOnBlock(bot, 'bucket', water);
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        await mineSafeObsidian(bot, num - count());
+    }
+    const have = count();
+    log(bot, `You have ${have} obsidian.`);
+    return have >= num;
+}
+
+export async function collectBlazeRods(bot, num=7) {
+    /**
+     * In the nether: find a nether fortress and kill blazes until you have enough blaze rods. Fights from range with a bow if you have one. Bring armor and food.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} num, how many blaze rods to collect. Defaults to 7.
+     * @returns {Promise<boolean>} true if you have the requested blaze rods, false otherwise.
+     * @example
+     * await skills.collectBlazeRods(bot, 7);
+     **/
+    if (getDimension(bot) !== 'the_nether') {
+        log(bot, `Blazes live in nether fortresses. Go to the nether first.`);
+        return false;
+    }
+    const count = () => world.getInventoryCounts(bot)['blaze_rod'] || 0;
+    const start = Date.now();
+    let waiting_since = null;
+    while (count() < num && Date.now() - start < 20 * 60 * 1000) {
+        if (bot.interrupt_code) return false;
+        const blaze = world.getNearestEntityWhere(bot, e => e.name === 'blaze', 32);
+        if (blaze) {
+            waiting_since = null;
+            await attackEntity(bot, blaze, true); // shoots it if it's hovering above, melees otherwise
+            continue;
+        }
+        const spawner = world.getNearestBlock(bot, 'spawner', 64);
+        if (spawner) {
+            // camp a few blocks from the spawner, blazes appear around it
+            if (bot.entity.position.distanceTo(spawner.position) > 8) {
+                await goToPosition(bot, spawner.position.x, spawner.position.y, spawner.position.z, 5);
+            }
+            waiting_since = waiting_since ?? Date.now();
+            if (Date.now() - waiting_since > 90000) {
+                log(bot, `No blazes have spawned in a while. The spawner may be blocked, or lit up by torches.`);
+                return false;
+            }
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            continue;
+        }
+        const bricks = world.getNearestBlocks(bot, ['nether_bricks'], 128, 400);
+        if (bricks.length > 0) {
+            // walk deeper into the fortress to find the blaze spawner
+            const far = bricks[Math.floor(bricks.length * (0.5 + Math.random() * 0.5)) - 1] ?? bricks[0];
+            log(bot, `In a nether fortress, searching for a blaze spawner.`);
+            await goToPosition(bot, far.position.x, far.position.y + 1, far.position.z, 3);
+            continue;
+        }
+        log(bot, `No nether fortress in sight, exploring.`);
+        if (!(await explore(bot, 150))) await moveAway(bot, 20);
+    }
+    const have = count();
+    log(bot, `You have ${have} blaze_rod.`);
+    return have >= num;
+}
+
+export async function collectEnderPearls(bot, num=12) {
+    /**
+     * Hunt endermen for ender pearls until you have enough. Endermen are common in warped forests in the nether and at night in the overworld.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} num, how many ender pearls to collect. Defaults to 12.
+     * @returns {Promise<boolean>} true if you have the requested ender pearls, false otherwise.
+     * @example
+     * await skills.collectEnderPearls(bot, 12);
+     **/
+    // eyes already crafted count as pearls
+    const count = () => {
+        const inv = world.getInventoryCounts(bot);
+        return (inv['ender_pearl'] || 0) + (inv['ender_eye'] || 0);
+    };
+    const start = Date.now();
+    let explored = 0;
+    while (count() < num && Date.now() - start < 20 * 60 * 1000) {
+        if (bot.interrupt_code) return false;
+        const enderman = world.getNearestEntityWhere(bot, e => e.name === 'enderman', 48);
+        if (enderman) {
+            explored = 0;
+            await attackEntity(bot, enderman, true);
+            continue;
+        }
+        if (getDimension(bot) === 'overworld' && bot.time.timeOfDay < 13000 && explored === 0) {
+            log(bot, `Endermen mostly spawn at night in the overworld (or in the nether's warped forests).`);
+        }
+        if (++explored > 8) {
+            log(bot, `Couldn't find any endermen after exploring a lot.`);
+            break;
+        }
+        await explore(bot, 120);
+    }
+    const have = count();
+    log(bot, `You have ${have} ender pearls (counting eyes of ender).`);
+    return have >= num;
 }
