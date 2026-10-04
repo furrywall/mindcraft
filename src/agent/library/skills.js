@@ -3558,13 +3558,11 @@ function cellKey(x, y, z) {
     return ((x + 8192) * 1024 + (y + 256)) * 16384 + (z + 8192);
 }
 
-function solidCells(bot, ignore=null) {
-    /* Cached "would this block stop an arrow" lookups, for tracing many shots at once. Cells in ignore (a set of
-       cellKeys) count as empty, e.g. blocks we're about to take away. */
+function solidCells(bot) {
+    /* Cached "would this block stop an arrow" lookups, for tracing many shots at once. */
     const cache = new Map();
     return (x, y, z) => {
         const key = cellKey(x, y, z);
-        if (ignore?.has(key)) return false;
         let solid = cache.get(key);
         if (solid === undefined) {
             const b = bot.blockAt(new Vec3(x, y, z));
@@ -3613,11 +3611,10 @@ function crystalShotClear(info, crystal, stand, high, solid=null) {
     return false;
 }
 
-async function planCrystalShot(bot, crystal, info, angles=null, avoid=[], ignore=null) {
+async function planCrystalShot(bot, crystal, info, angles=null, avoid=[]) {
     /* Find somewhere on the island to stand where an arrow (flat or lobbed) can reach the crystal,
-       away from any spots in avoid (where shooting didn't work), counting blocks in ignore as gone. That means
-       tracing a lot of arcs, so give the event loop a turn every so often: the bot has to keep moving and
-       dodging while we think. */
+       away from any spots in avoid (where shooting didn't work). That means tracing a lot of arcs, so give the
+       event loop a turn every so often: the bot has to keep moving and dodging while we think. */
     const to_center = Math.atan2(-info.center.z, -info.center.x); // pillars ring the island, aim back inward
     const base_angles = angles ?? [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05].map(a => to_center + a);
     const here = bot.entity.position;
@@ -3635,7 +3632,7 @@ async function planCrystalShot(bot, crystal, info, angles=null, avoid=[], ignore
         }
     }
     candidates.sort((a, b) => a.cost - b.cost);
-    const solid = solidCells(bot, ignore);
+    const solid = solidCells(bot);
     const ground = new Map();
     let slice_start = Date.now();
     for (const c of candidates) {
@@ -3756,13 +3753,9 @@ async function openCrystalCage(bot, crystal) {
         return null;
     }
     const foot = new pf.goals.GoalNear(Math.floor(bx) + 0.5, by, Math.floor(bz) + 0.5, 1);
-    let reached = await walkDodging(bot, foot, () => dragonPerching(bot));
+    const reached = await walkDodging(bot, foot, () => dragonPerching(bot));
     if (reached === 'later' || bot.interrupt_code) return 'later';
     if (!reached) {
-        // (leftovers of an earlier tower can be in the way: let the full pathfinder dig through)
-        try { reached = await goToGoal(bot, foot); } catch (err) { reached = false; }
-    }
-    if (!reached || bot.interrupt_code) {
         log(bot, `Couldn't get to the foot of the pillar with the crystal at ${crystal.position.floored()}.`);
         return null;
     }
@@ -3804,7 +3797,7 @@ async function openCrystalCage(bot, crystal) {
     // the roof, and anything left floating in line with the gap, would be in the way of our shots through it
     const inTheWay = (p) => {
         const dx = p.x - Math.floor(start.x), dz = p.z - Math.floor(start.z);
-        return (dx === 0 && dz === 0) || Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) >= 0.7;
+        return (dx === 0 && dz === 0) || Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) >= 0.3;
     };
     const climbDown = async (why) => {
         if (why) log(bot, why);
@@ -3839,6 +3832,9 @@ async function openCrystalCage(bot, crystal) {
         .filter(b => facing(b).depth > 1.2 && b.position.y >= info.top && b.position.y <= info.top + 2)
         .filter(b => eye().distanceTo(b.position.offset(0.5, 0.5, 0.5)) < 4.5)
         .sort((a, b) => facing(a).side - facing(b).side || a.position.y - b.position.y);
+    // an arrow from the ground needs the bars within about a block of the line through the middle of the gap
+    // gone (on a diagonal that's bars on both faces either side of the corner)
+    const gapDone = () => near_face.every(b => facing(b).side >= 1.1 || bot.blockAt(b.position)?.name !== 'iron_bars');
     let broken = 0;
     let approach_seen = null;
     for (const bar of near_face) {
@@ -3855,22 +3851,15 @@ async function openCrystalCage(bot, crystal) {
             const far_landing = d && dragonPhase(d) === DRAGON_PHASE.LANDING_APPROACH && !dragonHazards(bot).incoming &&
                 d.position.distanceTo(bot.entity.position) > 40;
             approach_seen ??= Date.now();
-            if (!far_landing || broken >= 5 || Date.now() - approach_seen > 5000) {
+            if (!far_landing || gapDone() || Date.now() - approach_seen > 8000) {
                 log(bot, `The dragon is coming, climbing back down.`);
                 break;
             }
         }
         if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
         if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
-        // every bar up here is time the dragon has to come back: stop as soon as there's a way to shoot it
-        // through the gap from the ground (once our tower and its rails are gone). a few more than the bare
-        // minimum, the arrows don't always fly as true as the plan
-        if (broken >= 5 && broken % 2 === 1) {
-            const going = new Set(rails.filter(inTheWay).map(p => cellKey(p.x, p.y, p.z)));
-            for (let y = start_y; y <= Math.floor(bot.entity.position.y); y++) going.add(cellKey(Math.floor(start.x), y, Math.floor(start.z)));
-            const gap = [angle, angle + 0.15, angle - 0.15, angle + 0.3, angle - 0.3];
-            if (await planCrystalShot(bot, crystal, getPillarInfo(bot, crystal), gap, [], going)) break;
-        }
+        // every bar up here is time the dragon has to come back: stop as soon as the gap is big enough
+        if (broken >= 3 && gapDone()) break;
     }
     await climbDown(`Broke ${broken} iron bars. Climbing back down before shooting, crystals explode.`);
     // (on a second try the bars facing us may all be gone already)
