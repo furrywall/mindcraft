@@ -390,6 +390,10 @@ function getGameProgress(bot) {
     // and a bot that started a run next to an old portal walked into the nether empty-handed
     const geared = any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1;
 
+    // the wood to start the run with, only looked up while it's needed
+    const nearest_log = any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe', 'wooden_pickaxe') ? null :
+        world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
             // pick up from where we are, so a re-read doesn't send the bot back for logs it already turned into a pickaxe
@@ -398,7 +402,11 @@ function getGameProgress(bot) {
                 ? `You have ${count('cobblestone')} cobblestone: !craftRecipe("stone_pickaxe", 1) now, then a stone_sword (2) and, with 8 more, a furnace.`
                 : has('wooden_pickaxe')
                 ? 'You have a wooden_pickaxe: mine 3 cobblestone and !craftRecipe("stone_pickaxe", 1) straight away, then mine ~13 more with it for a stone_sword (2), a furnace (8) and spares.'
-                : 'Collect 6 logs in one go, then !craftRecipe("wooden_pickaxe", 1): it makes the planks, sticks and crafting table it needs by itself.'},
+                // name the wood that's actually here: told "logs", the model asked for oak_log in a spruce forest,
+                // found none, and wandered off exploring
+                : nearest_log
+                ? `Collect 6 logs in one go with !collectBlocks("${nearest_log}", 6) (the nearest trees here), then !craftRecipe("wooden_pickaxe", 1): it makes the planks, sticks and crafting table it needs by itself.`
+                : 'There are no trees nearby: !explore(100) to find some, then collect 6 logs in one go and !craftRecipe("wooden_pickaxe", 1).'},
         {done: any('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Iron pickaxe',
             next: count('iron_ingot') >= 3
                 ? 'You have iron_ingot: craft the iron_pickaxe now.'
