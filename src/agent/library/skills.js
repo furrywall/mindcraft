@@ -230,7 +230,16 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
         }
     }
     if (!recipes || recipes.length === 0) {
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        // with no wood at all the recipe comes out as oak, and told "oak_log" the model hunted for oaks where there
+        // were none: any wood will do, so say so and name the nearest
+        const needs = Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]);
+        const any_wood = (name) => name.replace(/^oak_(planks|log)$/, '$1 (any wood)');
+        let wood_hint = '';
+        if (needs.some(([key]) => /^oak_(planks|log)$/.test(key)) || /^oak_(planks|log)$/.test(itemName)) {
+            const nearest = world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+            wood_hint = nearest ? ` Any wood works: the nearest trees are ${nearest}, !collectBlocks("${nearest}", 2).` : ' Any kind of wood works.';
+        }
+        log(bot, `You do not have the resources to craft ${any_wood(itemName)}. It requires: ${needs.map(([key, value]) => `${any_wood(key)}: ${value}`).join(', ')}.${wood_hint}`);
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }
