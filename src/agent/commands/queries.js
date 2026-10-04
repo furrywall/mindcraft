@@ -378,11 +378,12 @@ function getGameProgress(bot) {
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
             // pick up from where we are, so a re-read doesn't send the bot back for logs it already turned into a pickaxe
-            next: count('cobblestone') >= 5
-                ? `You have ${count('cobblestone')} cobblestone: craft the stone_pickaxe (3) and stone_sword (2) now, and a furnace (8) when you have enough.`
+            // craftRecipe makes the planks, sticks and crafting table a recipe needs, so one command does each tool
+            next: count('cobblestone') >= 3
+                ? `You have ${count('cobblestone')} cobblestone: !craftRecipe("stone_pickaxe", 1) now, then a stone_sword (2) and, with 8 more, a furnace.`
                 : has('wooden_pickaxe')
-                ? 'You have a wooden_pickaxe: mine 16 cobblestone in one go, then craft a stone_pickaxe (3), stone_sword (2) and a furnace (8) together.'
-                : 'Collect 6 logs in one go (planks for a crafting_table, sticks, a wooden_pickaxe, and a shield later), then craft the wooden_pickaxe.'},
+                ? 'You have a wooden_pickaxe: mine 3 cobblestone and !craftRecipe("stone_pickaxe", 1) straight away, then mine ~13 more with it for a stone_sword (2), a furnace (8) and spares.'
+                : 'Collect 6 logs in one go, then !craftRecipe("wooden_pickaxe", 1): it makes the planks, sticks and crafting table it needs by itself.'},
         {done: any('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Iron pickaxe',
             next: count('iron_ingot') >= 3
                 ? 'You have iron_ingot: craft the iron_pickaxe now.'

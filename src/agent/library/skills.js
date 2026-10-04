@@ -135,7 +135,40 @@ async function resyncInventory(bot) {
     }
 }
 
-export async function craftRecipe(bot, itemName, num=1) {
+async function craftMissingIngredients(bot, itemName, num, depth) {
+    /* Craft the planks and sticks a recipe needs from what we carry. Getting a wooden pickaxe took a round trip to the
+       model for each of planks, sticks, the table and the pickaxe, plus failed tries in between. */
+    const inv = () => world.getInventoryCounts(bot);
+    const plankable = (name, counts) => (counts[name] || 0) + 4 * (counts[name.replace(/_planks$/, '_log')] || 0);
+    // the recipe variant we're closest to having, e.g. spruce planks when we carry spruce logs
+    let best = null, best_score = -1;
+    for (const [ingredients] of mc.getItemCraftingRecipes(itemName) || []) {
+        const counts = inv();
+        const any_planks = Math.max(0, ...Object.keys(counts).filter(n => n.endsWith('_planks') || n.endsWith('_log'))
+            .map(n => plankable(n.replace(/_log$/, '_planks'), counts)));
+        let score = 0;
+        for (const [name, per] of Object.entries(ingredients)) {
+            const need = per * num;
+            const have = name === 'stick' ? (counts.stick || 0) + 2 * any_planks
+                : name.endsWith('_planks') ? plankable(name, counts) : (counts[name] || 0);
+            score += Math.min(have, need) / need;
+        }
+        if (score > best_score) {
+            best = ingredients;
+            best_score = score;
+        }
+    }
+    if (!best) return;
+    // sticks first: making them uses planks, which would otherwise come out of the planks the recipe itself needs
+    const entries = Object.entries(best).sort(([a], [b]) => (b === 'stick') - (a === 'stick'));
+    for (const [name, per] of entries) {
+        const missing = per * num - (inv()[name] || 0);
+        if (missing > 0 && (name === 'stick' || name.endsWith('_planks')))
+            await craftRecipe(bot, name, Math.ceil(missing / 4), depth + 1); // both recipes make 4
+    }
+}
+
+export async function craftRecipe(bot, itemName, num=1, _depth=0) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -146,10 +179,12 @@ export async function craftRecipe(bot, itemName, num=1) {
      **/
     let placedTable = false;
 
-    if (mc.getItemCraftingRecipes(itemName).length == 0) {
+    if ((mc.getItemCraftingRecipes(itemName) || []).length == 0) {
         log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
         return false;
     }
+    if (_depth < 2)
+        await craftMissingIngredients(bot, itemName, num, _depth);
 
     // get recipes that don't require a crafting table
     let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
@@ -163,8 +198,10 @@ export async function craftRecipe(bot, itemName, num=1) {
         craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
         if (craftingTable === null){
 
-            // Try to place crafting table
+            // Try to place crafting table, crafting one first if we can
             let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
+            if (!hasTable && _depth < 2)
+                hasTable = await craftRecipe(bot, 'crafting_table', 1, _depth + 1) && world.getInventoryCounts(bot)['crafting_table'] > 0;
             if (hasTable) {
                 // the nearest free space doesn't always take a block (underground it failed), so also try the spaces
                 // right around us. crafting without a table throws, and the model was shown the whole recipe
