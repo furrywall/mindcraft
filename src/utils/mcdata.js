@@ -141,6 +141,14 @@ export function initBot(username) {
         bot.acceptResourcePack();
     });
 
+    // going home through the end's exit portal, the server waits for the client to ask to respawn, after the
+    // credits (value 1) or straight away when they've been seen before (value 0). mineflayer only answers the
+    // first, so every later trip home left the bot stuck in limbo
+    bot._client.on('game_state_change', (packet) => {
+        if ((packet.reason === 4 || packet.reason === 'win_game') && packet.gameMode === 0)
+            bot._client.write('client_command', bot.supportFeature('respawnIsPayload') ? { payload: 0 } : { actionId: 0 });
+    });
+
     bot.once('login', () => {
         mc_version = bot.version;
         mcdata = minecraftData(mc_version);

@@ -3693,6 +3693,8 @@ async function guardRails(bot) {
         if (bot.interrupt_code) break;
         const side = bot.blockAt(feet.offset(dx, 0, dz));
         if (!side || side.boundingBox === 'block') continue;
+        // being pushed onto the top of the pillar next to us is fine
+        if (['obsidian', 'bedrock'].includes(bot.blockAt(feet.offset(dx, -1, dz))?.name)) continue;
         const scaffold = getScaffoldItem(bot);
         if (!scaffold) break;
         try {
@@ -3790,9 +3792,12 @@ async function openCrystalCage(bot, crystal) {
     let rails = [];
     const climbDown = async (why) => {
         if (why) log(bot, why);
-        // the rails would be left floating in the way of our shots through the gap, so take them away again
+        // rails left floating in line with the gap would be in the way of our shots, so take those away again
+        const feet = bot.entity.position.floored();
         for (const p of rails) {
             if (bot.interrupt_code) break;
+            const dx = p.x - feet.x, dz = p.z - feet.z;
+            if (Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) < 0.7) continue;
             if (bot.blockAt(p)?.boundingBox === 'block') await breakBlockAt(bot, p.x, p.y, p.z);
         }
         const y = Math.floor(bot.entity.position.y);
