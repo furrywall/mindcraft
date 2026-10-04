@@ -982,7 +982,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             
             return movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
-        }, 64, 1);
+        }, 64, 16);
 
         if (blocks.length === 0) {
             if (collected === 0)
@@ -991,7 +991,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 log(bot, `No more ${blockType} nearby to collect.`);
             break;
         }
-        const block = blocks[0];
+        // the nearest one is often high up a tree, and pillaring or climbing through leaves to it is slow and clumsy
+        // for the pathfinder. prefer blocks near our feet, so it takes the low logs of nearby trees first
+        const feet = bot.entity.position.y;
+        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2);
+        const block = blocks.reduce((best, b) => cost(b) < cost(best) ? b : best);
         await bot.tool.equipForBlock(block);
         if (isLiquid) {
             const bucket = bot.inventory.findInventoryItem('bucket');
