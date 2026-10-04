@@ -307,6 +307,13 @@ export async function smeltItem(bot, itemName, num=1) {
     bot.modes.pause('unstuck');
     await bot.lookAt(furnaceBlock.position);
 
+    // the furnace only takes from the main inventory, but the counts include the off-hand and crafting grid,
+    // which can't be reached once the furnace window is open
+    for (const slot of EXTRA_ITEM_SLOTS) {
+        if (bot.inventory.slots[slot]?.name === itemName && bot.inventory.emptySlotCount() > 0)
+            await bot.putAway(slot).catch(() => {});
+    }
+
     console.log('smelting...');
     const furnace = await bot.openFurnace(furnaceBlock);
     // check if the furnace is already smelting something

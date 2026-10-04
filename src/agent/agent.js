@@ -201,6 +201,8 @@ export class Agent {
             priority: 'foodPoints',
             // health only regenerates at 18+ hunger, so starting at 14 could leave the bot hurt for a whole run
             startAt: 18,
+            // eating from the off-hand left the food there (taking the shield's place) and out of the furnace's reach
+            offhand: false,
         });
 
         if (save_data?.self_prompt) {

@@ -368,11 +368,11 @@ function getGameProgress(bot) {
 
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
-            next: 'Collect logs, craft planks, sticks, a crafting_table and a wooden_pickaxe, then mine cobblestone for a stone_pickaxe and a stone_sword.'},
+            next: 'Collect 6 logs in one go (planks for a crafting_table, sticks, a wooden_pickaxe, and a shield later), craft the wooden_pickaxe, then mine 16 cobblestone at once: stone_pickaxe (3), stone_sword (2), furnace (8) and spares. Craft them all together.'},
         {done: any('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Iron pickaxe',
-            next: 'Mine iron_ore (dig down to y=16 or explore caves), smelt raw_iron in a furnace, craft an iron_pickaxe.'},
+            next: 'Mine iron in one trip (dig down to y=16 or explore caves): about 25 iron_ore covers the iron_pickaxe (3), shield (1), iron_sword (2), bucket (3), chestplate (8) and leggings (7). Grab any coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe.'},
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 2, text: 'Sword, shield and some armor',
-            next: 'Get more iron: craft a shield first (1 iron_ingot, 6 planks: you block with it in fights), then an iron_sword, iron_chestplate and iron_leggings.'},
+            next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights), then an iron_sword, iron_chestplate and iron_leggings. If you are short of iron, mine all you still need in one trip.'},
         {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',
             next: 'Craft a bow (3 sticks, 3 string from spiders) and arrows (flint, stick, feather from chickens).'},
         {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
@@ -426,5 +426,6 @@ function getGameProgress(bot) {
     // once in the end, the dragon is the only thing that matters
     const next = dimension === 'the_end' ? steps[steps.length - 1] : steps.find(s => !s.done);
     res += `\nNext step: ${survival || next.next}`;
+    res += '\nGather everything a step needs in one trip and craft it together, instead of going back for more of the same thing.';
     return res;
 }
