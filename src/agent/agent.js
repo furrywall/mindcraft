@@ -131,8 +131,12 @@ export class Agent {
               
                 if (!load_mem) {
                     if (settings.task) {
-                        this.task.initBotTask();
-                        this.task.setAgentGoal();
+                        // setting up the task sets the goal when it's done. setting it here as well started the
+                        // self-prompter early: the bot read its progress in the nether where the last run ended and
+                        // set off for blaze rods while setup was still emptying its inventory and moving it
+                        await this.task.initBotTask();
+                        if (this.task.data === null)
+                            this.task.setAgentGoal();
                     }
                 } else {
                     // set the goal without initializing the rest of the task
