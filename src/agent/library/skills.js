@@ -3273,7 +3273,7 @@ export async function useToolOn(bot, toolName, targetName) {
      * @param {string} targetName - entity type, block type, or "nothing" for no target
      * @returns {Promise<boolean>} true if action succeeded
      */
-    if (!bot.inventory.slots.find(slot => slot && slot.name === toolName) && !bot.game.gameMode === 'creative') {
+    if (toolName !== 'hand' && !bot.inventory.slots.find(slot => slot && slot.name === toolName) && bot.game.gameMode !== 'creative') {
         log(bot, `You do not have any ${toolName} to use.`);
         return false;
     }
@@ -3302,6 +3302,8 @@ export async function useToolOn(bot, toolName, targetName) {
         }
         await bot.useOn(entity);
         log(bot, `Used ${toolName} on ${targetName}.`);
+    } else if (toolName === 'bucket' && (targetName === 'water' || targetName === 'lava')) {
+        return await fillBucket(bot, targetName);
     } else {
         let block = null;
         if (targetName === 'water' || targetName === 'lava') {
@@ -3326,6 +3328,45 @@ export async function useToolOn(bot, toolName, targetName) {
 
     return true;
  }
+
+async function fillBucket(bot, liquid) {
+    // fill an empty bucket from the nearest source we can actually reach. the nearest is often a lone source set into
+    // a cave wall that can't be seen past the rock, so try a few, ones open to the sky first
+    const sources = world.getNearestBlocksWhere(bot, b => b.name === liquid && b.metadata === 0, 64, 12)
+        .map(b => b.position)
+        .sort((a, b) => {
+            const open = (p) => isAirLike(bot.blockAt(p.offset(0, 1, 0))) ? 0 : 8;
+            return a.distanceTo(bot.entity.position) + open(a) - b.distanceTo(bot.entity.position) - open(b);
+        });
+    if (sources.length === 0) {
+        log(bot, `Could not find any source ${liquid} within 64 blocks.`);
+        return false;
+    }
+    for (const p of sources.slice(0, 5)) {
+        if (bot.interrupt_code) return false;
+        await goToPosition(bot, p.x, p.y, p.z, 2.5);
+        await new Promise(resolve => setTimeout(resolve, 150));
+        // rock between us and the source (a cave wall or ceiling): mine it out of the way, like a player would
+        for (let dig = 0; dig < 3; dig++) {
+            if (await scoopLiquid(bot, p, liquid)) {
+                log(bot, `Filled a bucket with ${liquid} at ${p}.`);
+                return true;
+            }
+            const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+            const center = p.offset(0.5, 0.5, 0.5);
+            const hit = bot.world.raycast(eye, center.minus(eye).normalize(), eye.distanceTo(center) + 0.5,
+                blk => blk.boundingBox === 'block' || (blk.name === liquid && blk.metadata === 0));
+            const feet = bot.entity.position.floored();
+            if (!hit || hit.position.equals(p) || hit.boundingBox !== 'block' || !hit.diggable ||
+                hit.position.equals(feet.offset(0, -1, 0))) break;
+            log(bot, `${hit.name} at ${hit.position} is between you and the ${liquid}, mining it.`);
+            if (!(await breakBlockAt(bot, hit.position.x, hit.position.y, hit.position.z))) break;
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+    }
+    log(bot, `Couldn't reach any of the ${liquid} near you with the bucket. Try !searchForBlock("${liquid}", 128) to find a bigger pool.`);
+    return false;
+}
 
  export async function useToolOnBlock(bot, toolName, block) {
     /**
