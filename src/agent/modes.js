@@ -38,7 +38,15 @@ const modes_list = [
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            if (blockAbove.name === 'water') {
+            // a full breath is 20 and lasts 15 seconds. come up while there's still time, whatever we're doing:
+            // paths to things underwater dive and never surface, and moving away when hurt swims along under the water
+            if (skills.isWaterBlock(blockAbove) && bot.oxygenLevel != null && bot.oxygenLevel < 12) {
+                say(agent, 'Coming up for air!');
+                execute(this, agent, async () => {
+                    await skills.swimToAir(bot);
+                });
+            }
+            else if (blockAbove.name === 'water') {
                 // does not call execute so does not interrupt other actions
                 if (!bot.pathfinder.goal) {
                     bot.setControlState('jump', true);

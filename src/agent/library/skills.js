@@ -1686,7 +1686,7 @@ export async function goToGoal(bot, goal) {
     }
 }
 
-function isWaterBlock(block) {
+export function isWaterBlock(block) {
     if (!block) return false;
     if (['water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'].includes(block.name)) return true;
     return block.getProperties?.().waterlogged === true;
@@ -1756,6 +1756,37 @@ async function swimToShore(bot, goal=null) {
     const ok = !bot.entity.isInWater;
     if (ok) log(bot, `Got out of the water at ${bot.entity.position.floored()}.`);
     return ok;
+}
+
+export async function swimToAir(bot) {
+    /**
+     * Swim straight up to breathe when running out of air underwater, then swim to the nearest land.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if the bot got its head above water, false otherwise.
+     * @example
+     * await skills.swimToAir(bot);
+     **/
+    const headInWater = () => isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1.62, 0)));
+    stopPathfinding(bot);
+    const start = Date.now();
+    try {
+        while (headInWater() && Date.now() - start < 10000) {
+            if (bot.interrupt_code) return false;
+            bot.setControlState('jump', true);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    } finally {
+        bot.clearControlStates();
+    }
+    if (headInWater()) {
+        // something is in the way above, so head for a bank instead
+        log(bot, `Couldn't swim straight up for air.`);
+        return await swimToShore(bot);
+    }
+    log(bot, `Came up for air at ${bot.entity.position.floored()}.`);
+    // get out of the water too, or the next path dives straight back down
+    await swimToShore(bot);
+    return true;
 }
 
 async function gotoWithWatchdog(bot, goal, noProgressMs=30000) {
@@ -2041,7 +2072,17 @@ export async function goToNearestBlock(bot, blockType,  min_distance=2, range=64
         block = blocks[0];
     }
     else {
-        block = world.getNearestBlock(bot, blockType, range);
+        // getting to something under water means diving for it, so take the nearest one that isn't when there is one
+        const underwater = (b) => {
+            for (let dy = 1; dy <= 4; dy++) {
+                const above = bot.blockAt(b.position.offset(0, dy, 0));
+                if (isWaterBlock(above)) return true;
+                if (!above || above.boundingBox === 'empty') return false;
+            }
+            return false;
+        };
+        const blocks = world.getNearestBlocks(bot, blockType, range, 16);
+        block = blocks.find(b => !underwater(b)) || blocks[0];
     }
     if (!block) {
         log(bot, `Could not find any ${blockType} in ${range} blocks.`);
