@@ -3803,6 +3803,10 @@ export async function castNetherPortal(bot) {
         log(bot, `Cast the portal in the overworld: water evaporates in the nether.`);
         return false;
     }
+    // choosing the spot and aiming each pour means standing still for a while, and the unstuck mode stopped the
+    // first cast in a real run before it had placed a block
+    bot.modes.pause('unstuck');
+    bot.modes.pause('elbow_room');
     const counts = () => world.getInventoryCounts(bot);
     const scaffoldCount = () => SCAFFOLD_BLOCKS.reduce((n, name) => n + (counts()[name] || 0), 0);
     const missing = [];
