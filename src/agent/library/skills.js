@@ -1898,10 +1898,6 @@ export async function bunkerDown(bot) {
         }
     }
     const scaffold = getScaffoldItem(bot);
-    if (!scaffold) {
-        log(bot, `Can't bunker down without a block to seal the hole (dirt or cobblestone).`);
-        return false;
-    }
     stopPathfinding(bot);
     for (let dy = 1; dy <= 2; dy++) {
         const block = bot.blockAt(start.offset(0, -dy, 0));
@@ -1917,9 +1913,39 @@ export async function bunkerDown(bot) {
             await new Promise(resolve => setTimeout(resolve, 50));
     }
     // seal the top: the old feet level, now two blocks above our feet
-    const sealed = await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true);
-    if (sealed) log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
-    return sealed;
+    if (scaffold && await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true)) {
+        log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
+        return true;
+    }
+    // nothing to seal it with: dig a pocket to the side and step into it, out of sight of archers above the hole
+    const bottom = start.offset(0, -2, 0);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const feet = bot.blockAt(bottom.offset(dx, 0, dz)), head = bot.blockAt(bottom.offset(dx, 1, dz));
+        const floor = bot.blockAt(bottom.offset(dx, -1, dz)), roof = bot.blockAt(bottom.offset(dx, 2, dz));
+        const ok = b => b && (b.boundingBox === 'empty' || b.diggable) && !isWaterBlock(b) && b.name !== 'lava';
+        if (!ok(feet) || !ok(head) || floor?.boundingBox !== 'block' || roof?.boundingBox !== 'block') continue;
+        try {
+            for (const b of [head, feet]) {
+                if (b.boundingBox === 'block') {
+                    await bot.tool.equipForBlock(b);
+                    await bot.dig(b);
+                }
+            }
+        } catch (err) {
+            continue;
+        }
+        const target = bottom.offset(dx + 0.5, 0, dz + 0.5);
+        for (let t = 0; t < 30 && Math.hypot(target.x - bot.entity.position.x, target.z - bot.entity.position.z) > 0.3; t++) {
+            await bot.lookAt(target.offset(0, 1.6, 0), true);
+            bot.setControlState('forward', true);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        bot.setControlState('forward', false);
+        log(bot, `Bunkered down in a pocket at ${bot.entity.position.floored()}, out of sight until it's safe.`);
+        return true;
+    }
+    log(bot, `Dug down to hide at ${bot.entity.position.floored()}, but couldn't seal the hole or dig a pocket.`);
+    return true;
 }
 
 export async function digOut(bot) {

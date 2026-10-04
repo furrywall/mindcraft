@@ -357,7 +357,7 @@ export const queryList = [
 export function getNextStepHint(bot) {
     // the next step (and food note) from !gameProgress, added to command results so the model doesn't have to spend
     // a turn on !gameProgress after every command
-    return getGameProgress(bot).split('\n').filter(line => line.startsWith('Next step:') || line.startsWith('Food:')).join('\n');
+    return getGameProgress(bot).split('\n').filter(line => line.startsWith('Next step:') || line.startsWith('Food:') || line.startsWith('Keep about')).join('\n');
 }
 
 function getGameProgress(bot) {
@@ -464,5 +464,7 @@ function getGameProgress(bot) {
     if (!survival && food < 4 && dimension === 'overworld')
         res += '\nFood: kill animals you pass on the way (cow, pig, sheep) and cook the meat, but don\'t go searching for them.';
     res += '\nGather everything a step needs in one trip and craft it together, instead of going back for more of the same thing.';
+    if (steps[0].done && count('cobblestone') + count('dirt') + count('cobbled_deepslate') < 8)
+        res += '\nKeep about 16 cobblestone or dirt with you for hiding and building (mine some on the way).';
     return res;
 }
