@@ -3855,7 +3855,7 @@ async function openCrystalCage(bot, crystal) {
             const far_landing = d && dragonPhase(d) === DRAGON_PHASE.LANDING_APPROACH && !dragonHazards(bot).incoming &&
                 d.position.distanceTo(bot.entity.position) > 40;
             approach_seen ??= Date.now();
-            if (!far_landing || broken >= 3 || Date.now() - approach_seen > 4000) {
+            if (!far_landing || broken >= 5 || Date.now() - approach_seen > 5000) {
                 log(bot, `The dragon is coming, climbing back down.`);
                 break;
             }
@@ -3863,8 +3863,9 @@ async function openCrystalCage(bot, crystal) {
         if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
         if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
         // every bar up here is time the dragon has to come back: stop as soon as there's a way to shoot it
-        // through the gap from the ground (once our tower and its rails are gone)
-        if (broken >= 3 && broken % 2 === 1) {
+        // through the gap from the ground (once our tower and its rails are gone). a few more than the bare
+        // minimum, the arrows don't always fly as true as the plan
+        if (broken >= 5 && broken % 2 === 1) {
             const going = new Set(rails.filter(inTheWay).map(p => cellKey(p.x, p.y, p.z)));
             for (let y = start_y; y <= Math.floor(bot.entity.position.y); y++) going.add(cellKey(Math.floor(start.x), y, Math.floor(start.z)));
             const gap = [angle, angle + 0.15, angle - 0.15, angle + 0.3, angle - 0.3];
@@ -4482,7 +4483,8 @@ async function dragonFight(bot) {
     let last_round = Date.now();
     let last_crystal_heal = 0;
     let waiting_out_perch = false;
-    for (let round = 0; round < 60 && crystal_time < 6 * 60 * 1000; round++) {
+    // (a crystal left up heals it faster than we can hurt it, so this is worth most of the time we have)
+    for (let round = 0; round < 60 && crystal_time < 9 * 60 * 1000; round++) {
         // (always let timers run between rounds: some rounds end without waiting on anything)
         await sleep(50);
         if (bot.interrupt_code) return false;
