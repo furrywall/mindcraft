@@ -417,10 +417,15 @@ function getGameProgress(bot) {
     const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
-    if (dimension === 'overworld' && steps[0].done) {
-        if (night && !has_sword && bot.blockAt(bot.entity.position)?.skyLight > 7)
-            survival = 'It\'s night and mobs are out: craft a stone_sword (2 cobblestone, 1 stick) before anything else on the surface, or keep working underground.';
-        else if (food < 4 && raw_meat.length > 0)
+    const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
+    if (dimension === 'overworld' && night && on_surface && !steps[1].done) {
+        // an early-game bot on the surface at night keeps dying to zombies, skeletons and creepers. underground it's
+        // safe, and mining iron down there is the next step anyway
+        survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
+            'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore, coal_ore) until morning.';
+    }
+    else if (dimension === 'overworld' && steps[0].done) {
+        if (food < 4 && raw_meat.length > 0)
             survival = `You're low on food: cook your raw meat with !smeltItem("${raw_meat[0]}", ${count(raw_meat[0])}) (needs a furnace, 8 cobblestone, and fuel).`;
         else if (food < 4)
             survival = 'You\'re low on food: kill a few animals nearby with !attack (cow, pig, sheep or chicken), then cook the meat with !smeltItem. Aim for 10+ cooked food before going far.';

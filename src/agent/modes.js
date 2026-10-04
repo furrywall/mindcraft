@@ -104,9 +104,11 @@ const modes_list = [
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
                 say(agent, 'I\'m dying!');
                 execute(this, agent, async () => {
-                    // run from whatever is hurting us; a random direction can lead straight into it
-                    if (world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 16))
-                        await skills.avoidEnemies(bot, 16);
+                    // hide from whatever is hurting us, or run from it: a random direction can lead straight into it
+                    if (world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 16)) {
+                        if (!await skills.bunkerDown(bot))
+                            await skills.avoidEnemies(bot, 16);
+                    }
                     else
                         await skills.moveAway(bot, 20);
                 });
@@ -227,9 +229,13 @@ const modes_list = [
             const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
                 (enemy.name === 'creeper' && !has_shield && !has_bow);
             if (outmatched) {
-                say(agent, `Too dangerous to fight the ${enemy.name}, running!`);
+                // hurt at night there's no outrunning them all: dig in and seal the hole instead
+                const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
+                const hide = bot.health <= 6 || (night && bot.health <= 12);
+                say(agent, `Too dangerous to fight the ${enemy.name}, ${hide ? 'hiding' : 'running'}!`);
                 execute(this, agent, async () => {
-                    await skills.avoidEnemies(bot, 16);
+                    if (!hide || !await skills.bunkerDown(bot))
+                        await skills.avoidEnemies(bot, 16);
                 });
             }
             else {

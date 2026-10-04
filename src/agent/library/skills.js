@@ -1821,6 +1821,49 @@ export async function swimToAir(bot) {
     return true;
 }
 
+export async function bunkerDown(bot) {
+    /**
+     * Hide from mobs: dig two blocks straight down and seal the hole above. Use it when hurt at night with no way to
+     * win a fight. Afterwards you are underground and can mine your way onward.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if the bot is sealed in, false if it wasn't safe to dig down here.
+     * @example
+     * await skills.bunkerDown(bot);
+     **/
+    const start = bot.entity.position.floored();
+    // the two blocks we dig and the one we land on must be solid: no digging into lava, water or a cave drop
+    for (let dy = 1; dy <= 3; dy++) {
+        const block = bot.blockAt(start.offset(0, -dy, 0));
+        if (!block || block.boundingBox !== 'block' || (dy <= 2 && !block.diggable) || DANGER_BLOCKS.includes(block.name) || isWaterBlock(block)) {
+            log(bot, `Can't bunker down here: ${block?.name || 'unloaded'} ${dy} below.`);
+            return false;
+        }
+    }
+    const scaffold = getScaffoldItem(bot);
+    if (!scaffold) {
+        log(bot, `Can't bunker down without a block to seal the hole (dirt or cobblestone).`);
+        return false;
+    }
+    stopPathfinding(bot);
+    for (let dy = 1; dy <= 2; dy++) {
+        const block = bot.blockAt(start.offset(0, -dy, 0));
+        try {
+            await bot.tool.equipForBlock(block);
+            await bot.dig(block);
+        } catch (err) {
+            log(bot, `Couldn't dig down to bunker: ${err.message}.`);
+            return false;
+        }
+        // let gravity bring us down into the hole before digging the next block
+        for (let t = 0; t < 20 && bot.entity.position.y > start.y - dy + 0.1; t++)
+            await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    // seal the top: the old feet level, now two blocks above our feet
+    const sealed = await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true);
+    if (sealed) log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
+    return sealed;
+}
+
 export async function digOut(bot) {
     /**
      * Break the blocks the bot is stuck inside of, e.g. after sand or gravel fell on it, so it stops suffocating.
