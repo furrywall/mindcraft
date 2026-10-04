@@ -368,9 +368,18 @@ function getGameProgress(bot) {
 
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
-            next: 'Collect 6 logs in one go (planks for a crafting_table, sticks, a wooden_pickaxe, and a shield later), craft the wooden_pickaxe, then mine 16 cobblestone at once: stone_pickaxe (3), stone_sword (2), furnace (8) and spares. Craft them all together.'},
+            // pick up from where we are, so a re-read doesn't send the bot back for logs it already turned into a pickaxe
+            next: count('cobblestone') >= 5
+                ? `You have ${count('cobblestone')} cobblestone: craft the stone_pickaxe (3) and stone_sword (2) now, and a furnace (8) when you have enough.`
+                : has('wooden_pickaxe')
+                ? 'You have a wooden_pickaxe: mine 16 cobblestone in one go, then craft a stone_pickaxe (3), stone_sword (2) and a furnace (8) together.'
+                : 'Collect 6 logs in one go (planks for a crafting_table, sticks, a wooden_pickaxe, and a shield later), then craft the wooden_pickaxe.'},
         {done: any('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Iron pickaxe',
-            next: 'Mine iron in one trip (dig down to y=16 or explore caves): about 25 iron_ore covers the iron_pickaxe (3), shield (1), iron_sword (2), bucket (3), chestplate (8) and leggings (7). Grab any coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe.'},
+            next: count('iron_ingot') >= 3
+                ? 'You have iron_ingot: craft the iron_pickaxe now.'
+                : count('raw_iron') + count('iron_ingot') >= 3
+                ? `Smelt all your raw_iron at once with !smeltItem("raw_iron", ${count('raw_iron')}), then craft the iron_pickaxe.`
+                : 'Mine iron in one trip (dig down to y=16 or explore caves): about 25 iron_ore covers the iron_pickaxe (3), shield (1), iron_sword (2), bucket (3), chestplate (8) and leggings (7). Grab any coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe.'},
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 2, text: 'Sword, shield and some armor',
             next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights), then an iron_sword, iron_chestplate and iron_leggings. If you are short of iron, mine all you still need in one trip.'},
         {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',

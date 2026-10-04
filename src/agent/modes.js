@@ -369,7 +369,9 @@ const modes_list = [
 ];
 
 async function execute(mode, agent, func, timeout=-1) {
-    if (agent.self_prompter.isActive())
+    // idle-time modes (picking up items, hunting) run while the model is thinking, and stopping the loop for them
+    // threw away the command it was about to give. only the modes that interrupt actions take over from it
+    if (mode.interrupts.includes('all') && agent.self_prompter.isActive())
         agent.self_prompter.stopLoop();
     let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;
