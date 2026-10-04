@@ -2639,6 +2639,28 @@ function stringifyItem(bot, item) {
     return text;
 }
 
+async function centerOnBlock(bot) {
+    /* Shuffle (sneaking, so we can't walk off anything) to the middle of the block we're standing in. Off center,
+       our hitbox overhangs the next block over and we can end up standing on that instead of what's under us. */
+    const target = bot.entity.position.floored().offset(0.5, 0, 0.5);
+    try {
+        bot.setControlState('sneak', true);
+        for (let t = 0; t < 30; t++) {
+            const p = bot.entity.position;
+            const dx = target.x - p.x, dz = target.z - p.z;
+            if (Math.hypot(dx, dz) < 0.12) break;
+            await bot.look(Math.atan2(-dx, -dz), bot.entity.pitch, true);
+            bot.setControlState('forward', true);
+            await new Promise(resolve => setTimeout(resolve, 50));
+            bot.setControlState('forward', false);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+    } finally {
+        bot.setControlState('forward', false);
+        bot.setControlState('sneak', false);
+    }
+}
+
 export async function digDown(bot, distance = 10) {
     /**
      * Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.
@@ -2697,6 +2719,16 @@ export async function digDown(bot, distance = 10) {
             if (bot.entity.onGround && bot.entity.position.y < targetBlock.position.y + 0.1) break;
             await new Promise(resolve => setTimeout(resolve, 50));
         }
+        if (bot.entity.position.y >= targetBlock.position.y + 0.5) {
+            // still up here: we're standing on the edge of a block next to the hole. step into the hole
+            await centerOnBlock(bot);
+            for (let t = 0; t < 30 && bot.entity.position.y >= targetBlock.position.y + 0.5; t++)
+                await new Promise(resolve => setTimeout(resolve, 50));
+            if (bot.entity.position.y >= targetBlock.position.y + 0.5) {
+                log(bot, `Dug down ${i-1} blocks, but can't get into the hole.`);
+                return false;
+            }
+        }
     }
     log(bot, `Dug down ${distance} blocks.`);
     return true;
@@ -2751,11 +2783,12 @@ export async function pillarUp(bot, height=1) {
 async function towerUp(bot, height, abort=null) {
     /* pillarUp, but stops (returning false) when abort() says so. */
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    stopPathfinding(bot);
+    await centerOnBlock(bot);
     const start_y = Math.floor(bot.entity.position.y);
     const target_y = start_y + height;
     const column = bot.entity.position.floored();
     let failures = 0;
-    stopPathfinding(bot);
     while (Math.floor(bot.entity.position.y + 0.01) < target_y) {
         if (bot.interrupt_code || abort?.()) return false;
         // knocked off (or pushed onto something else): this isn't our tower any more
@@ -3520,11 +3553,18 @@ function groundAt(bot, x, z, below_y) {
     return null;
 }
 
-function solidCells(bot) {
-    /* Cached "would this block stop an arrow" lookups, for tracing many shots at once. */
+function cellKey(x, y, z) {
+    // one number per block, for fast lookups (good for a few thousand blocks in every direction)
+    return ((x + 8192) * 1024 + (y + 256)) * 16384 + (z + 8192);
+}
+
+function solidCells(bot, ignore=null) {
+    /* Cached "would this block stop an arrow" lookups, for tracing many shots at once. Cells in ignore (a set of
+       cellKeys) count as empty, e.g. blocks we're about to take away. */
     const cache = new Map();
     return (x, y, z) => {
-        const key = `${x},${y},${z}`;
+        const key = cellKey(x, y, z);
+        if (ignore?.has(key)) return false;
         let solid = cache.get(key);
         if (solid === undefined) {
             const b = bot.blockAt(new Vec3(x, y, z));
@@ -3547,8 +3587,8 @@ function crystalShotClear(info, crystal, stand, high, solid=null) {
     // the arrow isn't a point: keep its half width (plus a little spread) clear of the pillar and the bars
     const margin = 0.3;
     const edge = info.radius + 0.5 + margin;
-    const bar_cells = new Set(info.bars.map(b => `${b.position.x},${b.position.y},${b.position.z}`));
-    const blocked = (x, y, z) => bar_cells.has(`${x},${y},${z}`) || (solid !== null && solid(x, y, z));
+    const bar_cells = new Set(info.bars.map(b => cellKey(b.position.x, b.position.y, b.position.z)));
+    const blocked = (x, y, z) => bar_cells.has(cellKey(x, y, z)) || (solid !== null && solid(x, y, z));
     // (the arrow only moves a fifth of a block per sub-step, so skip cells we've just checked)
     let prev = [];
     const hits = (px, py, pz) => {
@@ -3573,10 +3613,11 @@ function crystalShotClear(info, crystal, stand, high, solid=null) {
     return false;
 }
 
-async function planCrystalShot(bot, crystal, info, angles=null, avoid=[]) {
+async function planCrystalShot(bot, crystal, info, angles=null, avoid=[], ignore=null) {
     /* Find somewhere on the island to stand where an arrow (flat or lobbed) can reach the crystal,
-       away from any spots in avoid (where shooting didn't work). That means tracing a lot of arcs, so give the
-       event loop a turn every so often: the bot has to keep moving and dodging while we think. */
+       away from any spots in avoid (where shooting didn't work), counting blocks in ignore as gone. That means
+       tracing a lot of arcs, so give the event loop a turn every so often: the bot has to keep moving and
+       dodging while we think. */
     const to_center = Math.atan2(-info.center.z, -info.center.x); // pillars ring the island, aim back inward
     const base_angles = angles ?? [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05].map(a => to_center + a);
     const here = bot.entity.position;
@@ -3594,7 +3635,7 @@ async function planCrystalShot(bot, crystal, info, angles=null, avoid=[]) {
         }
     }
     candidates.sort((a, b) => a.cost - b.cost);
-    const solid = solidCells(bot);
+    const solid = solidCells(bot, ignore);
     const ground = new Map();
     let slice_start = Date.now();
     for (const c of candidates) {
@@ -3623,6 +3664,8 @@ async function shootCrystal(bot, crystal, angles=null) {
         const info = getPillarInfo(bot, crystal);
         const plan = await planCrystalShot(bot, crystal, info, angles, tried);
         if (!plan) {
+            // its breath may be lying where we'd stand. it clears up in a while
+            if (attempt === 0 && dragonHazards(bot).clouds.length > 0) return 'later';
             if (attempt === 0) log(bot, `Couldn't find a spot with a clear shot at the crystal at ${crystal.position.floored()}.`);
             break;
         }
@@ -3642,21 +3685,27 @@ async function shootCrystal(bot, crystal, angles=null) {
 
 async function guardRails(bot) {
     /* Put blocks around our feet on top of a 1x1 tower, so knockback (the dragon's wings push hard) can't
-       throw us off. Each one goes on a support block placed against the side of the tower. */
+       throw us off. Each one goes on a support block placed against the side of the tower. Returns where we
+       put blocks (rails first), so they can be taken away again. */
     const feet = bot.entity.position.floored();
+    const rails = [], supports = [];
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        if (bot.interrupt_code) return;
+        if (bot.interrupt_code) break;
         const side = bot.blockAt(feet.offset(dx, 0, dz));
         if (!side || side.boundingBox === 'block') continue;
         const scaffold = getScaffoldItem(bot);
-        if (!scaffold) return;
+        if (!scaffold) break;
         try {
             await bot.equip(scaffold, 'hand');
-            if (bot.blockAt(feet.offset(dx, -1, dz))?.boundingBox !== 'block')
+            if (bot.blockAt(feet.offset(dx, -1, dz))?.boundingBox !== 'block') {
                 await bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(dx, 0, dz));
+                supports.push(feet.offset(dx, -1, dz));
+            }
             await bot.placeBlock(bot.blockAt(feet.offset(dx, -1, dz)), new Vec3(0, 1, 0));
+            rails.push(feet.offset(dx, 0, dz));
         } catch (err) { /* do the other sides anyway */ }
     }
+    return [...rails, ...supports];
 }
 
 async function openCrystalCage(bot, crystal) {
@@ -3738,10 +3787,19 @@ async function openCrystalCage(bot, crystal) {
     const start_y = Math.floor(bot.entity.position.y);
     const start = bot.entity.position.clone();
     const knockedOff = () => Math.hypot(bot.entity.position.x - start.x, bot.entity.position.z - start.z) > 1.5;
+    let rails = [];
     const climbDown = async (why) => {
         if (why) log(bot, why);
+        // the rails would be left floating in the way of our shots through the gap, so take them away again
+        for (const p of rails) {
+            if (bot.interrupt_code) break;
+            if (bot.blockAt(p)?.boundingBox === 'block') await breakBlockAt(bot, p.x, p.y, p.z);
+        }
         const y = Math.floor(bot.entity.position.y);
-        if (y > start_y) await digDown(bot, y - start_y);
+        if (y > start_y) {
+            await centerOnBlock(bot);
+            await digDown(bot, y - start_y);
+        }
     };
     // feet level with the crystal's base puts our eyes level with the bars
     if (!(await towerUp(bot, info.top + 1 - start_y, comingForUs))) {
@@ -3750,7 +3808,7 @@ async function openCrystalCage(bot, crystal) {
         await climbDown(comingForUs() ? `The dragon is coming, climbing back down.` : null);
         return later ? 'later' : null;
     }
-    await guardRails(bot);
+    rails = await guardRails(bot);
 
     // the bars on the side facing us, level with the crystal; the middle ones first, that's where we shoot through
     const dir = {x: Math.cos(angle), z: Math.sin(angle)};
@@ -3777,9 +3835,18 @@ async function openCrystalCage(bot, crystal) {
         }
         if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
         if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
+        // every bar up here is time the dragon has to come back: stop as soon as there's a way to shoot it
+        // through the gap from the ground (once our tower and its rails are gone)
+        if (broken >= 3 && broken % 2 === 1) {
+            const going = new Set(rails.map(p => cellKey(p.x, p.y, p.z)));
+            for (let y = start_y; y <= Math.floor(bot.entity.position.y); y++) going.add(cellKey(Math.floor(start.x), y, Math.floor(start.z)));
+            const gap = [angle, angle + 0.15, angle - 0.15, angle + 0.3, angle - 0.3];
+            if (await planCrystalShot(bot, crystal, getPillarInfo(bot, crystal), gap, [], going)) break;
+        }
     }
     await climbDown(`Broke ${broken} iron bars. Climbing back down before shooting, crystals explode.`);
-    if (broken > 0) return angle;
+    // (on a second try the bars facing us may all be gone already)
+    if (broken > 0 || near_face.every(b => bot.blockAt(b.position)?.name !== 'iron_bars')) return angle;
     return bot.interrupt_code ? null : 'later';
 }
 
@@ -3836,11 +3903,11 @@ function dragonHazards(bot) {
     const flying = dragon && phase !== null && !SITTING_PHASES.includes(phase) && phase !== DRAGON_PHASE.DYING;
     if (!incoming && flying && vel && dragon.position.y - here.y < 8 && dragon.position.y - here.y > -6) {
         const speed2 = vel.x * vel.x + vel.z * vel.z;
-        if (speed2 > 4) {
-            // where it passes closest to us in the next 3 seconds, if it keeps going this way
+        if (speed2 > 1) {
+            // how close it passes us if it keeps going this way (it speeds up a lot, so don't count on it being slow)
             const rx = here.x - dragon.position.x, rz = here.z - dragon.position.z;
-            const t = Math.min(3, Math.max(0, (rx * vel.x + rz * vel.z) / speed2));
-            if (Math.hypot(rx - vel.x * t, rz - vel.z * t) < 11)
+            const t = Math.max(0, (rx * vel.x + rz * vel.z) / speed2);
+            if (t > 0 && Math.hypot(rx - vel.x * t, rz - vel.z * t) < 11 && Math.hypot(rx, rz) < 40)
                 incoming = {what: 'dragon', position: dragon.position.clone(), dir: vel.normalize(), impact: null, lateral: 12};
         }
     }
@@ -4012,6 +4079,32 @@ async function walkDodging(bot, goal, stop=null, timeout=30000) {
     }
 }
 
+function strandedHigh(bot) {
+    /* Standing on top of something tall (a pillar the dragon threw us onto), with the ground all around far
+       below? Then there's no path down, and the pathfinder will happily run us off the edge. */
+    const here = bot.entity.position;
+    if (!bot.entity.onGround) return false;
+    let drops = 0;
+    for (let a = 0; a < 8; a++) {
+        const y = groundAt(bot, here.x + Math.cos(a * Math.PI / 4) * 7, here.z + Math.sin(a * Math.PI / 4) * 7, here.y + 2);
+        if (y === null || y < here.y - 8) drops++;
+    }
+    return drops >= 6;
+}
+
+async function getDownSafely(bot) {
+    /* Dig straight down through whatever we're stuck on top of. Slow through obsidian, but the walls of the hole
+       also keep the dragon's wings from throwing us around. Returns false if we couldn't. */
+    const here = bot.entity.position;
+    let ground = null;
+    for (let a = 0; a < 8 && ground === null; a++)
+        ground = groundAt(bot, here.x + Math.cos(a * Math.PI / 4) * 7, here.z + Math.sin(a * Math.PI / 4) * 7, here.y - 8);
+    const depth = Math.floor(here.y) - (ground ?? Math.floor(here.y) - 20);
+    log(bot, `Stuck up on top of something ${depth} blocks high. Digging down.`);
+    await centerOnBlock(bot);
+    return await digDown(bot, depth);
+}
+
 async function healIfHurt(bot, below=12) {
     /* Eat a golden apple (or food, if hungry) when hurt. Returns true if we ate something. */
     if (bot.health >= below) return false;
@@ -4037,6 +4130,7 @@ function dragonFighter(bot, portal_y) {
     let last_health = null;
     let last_status = 0;
     let last_heal = 0;
+    let last_getdown = 0;
     let goal_key = null;
     const moveTo = (x, z, range, y=null, keepOut=null) => {
         // only re-plan when the target actually changes, or every few seconds
@@ -4089,6 +4183,23 @@ function dragonFighter(bot, portal_y) {
             if (!(await dodgeDragon(bot, hazards))) await sleep(150);
             return null;
         }
+        if (strandedHigh(bot)) {
+            // up on a pillar: there's no path down, and the pathfinder would run us off the edge looking for one.
+            // dig down now and then, and meanwhile shoot it from up here
+            stopPathfinding(bot);
+            goal_key = null;
+            if (Date.now() - last_getdown > 15000) {
+                last_getdown = Date.now();
+                await getDownSafely(bot);
+            }
+            else if (!SITTING_PHASES.includes(phase) && hasBowAndArrows(bot) && Date.now() - last_shot > 1500 &&
+                    bot.entity.position.distanceTo(dragon.position) < 70) {
+                await fireArrowAt(bot, dragon, {abort: () => { const h = dragonHazards(bot); return !!(h.incoming || h.inCloud); }});
+                last_shot = Date.now();
+            }
+            await sleep(200);
+            return null;
+        }
 
         // a spot this far from the dragon (or the portal) on solid ground, out of the breath, the closest one to us
         const clearSpot = (cx, cz, radius) => {
@@ -4098,7 +4209,10 @@ function dragonFighter(bot, portal_y) {
                 if (hazards.inBreath(x, z)) continue;
                 const y = groundAt(bot, x, z, 80);
                 if (y === null || y < 50) continue;
-                const d = Math.hypot(x - here.x, z - here.z);
+                // it flies in and out of the middle low down, through points 20 blocks out due north, east, south
+                // and west of the portal, so wait on the diagonals in between
+                const off_line = Math.min(Math.abs(x), Math.abs(z));
+                const d = Math.hypot(x - here.x, z - here.z) + (off_line < 8 ? 40 : 0);
                 if (!best || d < best.d) best = {x, y, z, d};
             }
             return best;
@@ -4290,11 +4404,15 @@ async function dragonFight(bot) {
     const given_up = new Set();
     const cage_opened = new Map(); // crystal id -> angle of the gap we made
     const cage_failed = new Map(); // crystal id -> times opening its cage didn't work out
+    const no_shot = new Map(); // caged crystal id -> how many bars were left when we found no way to shoot it
     let crystal_time = 0;
+    let last_getdown = 0;
     let last_round = Date.now();
     let last_crystal_heal = 0;
     let waiting_out_perch = false;
     for (let round = 0; round < 60 && crystal_time < 6 * 60 * 1000; round++) {
+        // (always let timers run between rounds: some rounds end without waiting on anything)
+        await sleep(50);
         if (bot.interrupt_code) return false;
         // whenever it comes down to perch, go back near the portal: it looks for someone within 20 blocks when it
         // lands, and charges at anyone further away
@@ -4311,6 +4429,15 @@ async function dragonFight(bot) {
         waiting_out_perch = false;
         crystal_time += Date.now() - last_round;
         last_round = Date.now();
+        if (strandedHigh(bot)) {
+            // (walking anywhere from up here would run us off the edge)
+            if (Date.now() - last_getdown > 15000) {
+                last_getdown = Date.now();
+                await getDownSafely(bot);
+            }
+            await sleep(500);
+            continue;
+        }
         // the dragon doesn't wait for us to finish: dodge its fireballs and breath, and heal up
         const hazards = dragonHazards(bot);
         if (hazards.incoming || hazards.inCloud) {
@@ -4341,11 +4468,17 @@ async function dragonFight(bot) {
         if (cage_opened.has(crystal.id)) {
             // shoot through the gap we made: stay close to that direction
             const a = cage_opened.get(crystal.id);
-            angles = [a, a + 0.15, a - 0.15];
+            angles = [a, a + 0.15, a - 0.15, a + 0.3, a - 0.3];
         }
-        else if (info.bars.length > 0 && !(await planCrystalShot(bot, crystal, info))) {
+        else if (info.bars.length > 0 && (no_shot.get(crystal.id) === info.bars.length || !(await planCrystalShot(bot, crystal, info)))) {
+            // (planning a shot that turns out impossible traces a lot of arcs: don't redo it until the bars change)
+            no_shot.set(crystal.id, info.bars.length);
             const gap = await openCrystalCage(bot, crystal);
-            if (gap === 'later') continue;
+            if (gap === 'later') {
+                // (doesn't count as a try: the time limit still applies)
+                round--;
+                continue;
+            }
             if (gap === null) {
                 cage_failed.set(crystal.id, (cage_failed.get(crystal.id) ?? 0) + 1);
                 if (cage_failed.get(crystal.id) >= 2) {
@@ -4358,7 +4491,18 @@ async function dragonFight(bot) {
             continue;
         }
         const destroyed = await shootCrystal(bot, crystal, angles);
-        if (destroyed === 'later') continue;
+        if (destroyed === 'later') {
+            round--;
+            await sleep(500);
+            continue;
+        }
+        if (!destroyed && isAlive(bot, crystal) && cage_opened.has(crystal.id) && (cage_failed.get(crystal.id) ?? 0) < 1) {
+            // the gap wasn't enough after all: go back up and make it bigger
+            cage_failed.set(crystal.id, 1);
+            cage_opened.delete(crystal.id);
+            no_shot.delete(crystal.id);
+            continue;
+        }
         if (!destroyed && isAlive(bot, crystal)) {
             log(bot, `Missed the crystal at ${crystal.position.floored()} too many times, moving on.`);
             given_up.add(crystal.id);
