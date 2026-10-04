@@ -921,6 +921,13 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         const id = mc.getBlockId(type);
         if (id != null) movements.blocksCantBreak.delete(id);
     }
+    // collectblock paths with plain pathfinder movements of its own unless given some, which swim through anything.
+    // it changes the ones it gets, so it gets its own copy
+    bot.collectBlock.movements = makeMovements(bot);
+    for (const type of blocktypes) {
+        const id = mc.getBlockId(type);
+        if (id != null) bot.collectBlock.movements.blocksCantBreak.delete(id);
+    }
 
     // Blocks to ignore safety for, usually next to lava/water
     const unsafeBlocks = ['obsidian'];

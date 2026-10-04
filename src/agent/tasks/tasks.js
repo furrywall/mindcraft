@@ -523,11 +523,42 @@ export class Task {
         await this.setAgentGoal();
     }
     
+    async moveToSurface() {
+        // a fresh run starts where the last one stopped, which can be underground, underwater, in the nether or the end.
+        // start it on the overworld surface instead, like a new world. spreadplayers never lands on water or lava,
+        // so look further out when the column straight up is sea, and fall back to the world spawn
+        const bot = this.agent.bot;
+        const dimension = (bot.game.dimension || '').replace('minecraft:', '');
+        const pos = bot.entity.position.clone();
+        if (dimension === 'overworld' && !bot.entity.isInWater && bot.blockAt(pos)?.skyLight === 15) {
+            console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
+            return;
+        }
+        const tries = [[pos, 1], [pos, 32], [pos, 128]];
+        if (bot.spawnPoint) tries.push([bot.spawnPoint, 64]);
+        for (const [center, range] of tries) {
+            const moved = new Promise((resolve) => {
+                const done = () => { clearTimeout(timer); resolve(true); };
+                const timer = setTimeout(() => { bot.removeListener('forcedMove', done); resolve(false); }, 3000);
+                bot.once('forcedMove', done);
+            });
+            bot.chat(`/execute in minecraft:overworld run spreadplayers ${Math.floor(center.x)} ${Math.floor(center.z)} 0 ${range} false ${this.name}`);
+            if (await moved) {
+                console.log(`Starting ${this.name} on the surface at ${bot.entity.position.floored()}.`);
+                return;
+            }
+        }
+        console.log(`Couldn't move ${this.name} to the surface, so it starts at ${pos.floored()}.`);
+    }
+
     async prepareWorld() {
         // bots used to be teleported to a human player and spread out here. that's gone: the /tp read the bot's
         // position before the server had moved it, so the spread started from wherever it logged out and could
         // leave it inside a wall. bots now start where they are
         let bot = this.agent.bot;
+
+        if (this.task_type === 'beat_game')
+            await this.moveToSurface();
 
         if (this.data.agent_count && this.data.agent_count > 1) {
             // TODO wait for other bots to join
