@@ -561,6 +561,10 @@ export class Task {
             await this.moveToSurface();
             // a new world starts in the morning. starting a run empty-handed at night got the bot killed within minutes
             bot.chat('/time set day');
+            // and with full health and hunger: they carry over from the last session, and one run started on 4 health
+            bot.chat(`/effect clear ${this.name}`);
+            bot.chat(`/effect give ${this.name} minecraft:instant_health 1 10 true`);
+            bot.chat(`/effect give ${this.name} minecraft:saturation 1 20 true`);
         }
 
         if (this.data.agent_count && this.data.agent_count > 1) {
