@@ -135,7 +135,40 @@ async function resyncInventory(bot) {
     }
 }
 
-export async function craftRecipe(bot, itemName, num=1) {
+async function craftMissingIngredients(bot, itemName, num, depth) {
+    /* Craft the planks and sticks a recipe needs from what we carry. Getting a wooden pickaxe took a round trip to the
+       model for each of planks, sticks, the table and the pickaxe, plus failed tries in between. */
+    const inv = () => world.getInventoryCounts(bot);
+    const plankable = (name, counts) => (counts[name] || 0) + 4 * (counts[name.replace(/_planks$/, '_log')] || 0);
+    // the recipe variant we're closest to having, e.g. spruce planks when we carry spruce logs
+    let best = null, best_score = -1;
+    for (const [ingredients] of mc.getItemCraftingRecipes(itemName) || []) {
+        const counts = inv();
+        const any_planks = Math.max(0, ...Object.keys(counts).filter(n => n.endsWith('_planks') || n.endsWith('_log'))
+            .map(n => plankable(n.replace(/_log$/, '_planks'), counts)));
+        let score = 0;
+        for (const [name, per] of Object.entries(ingredients)) {
+            const need = per * num;
+            const have = name === 'stick' ? (counts.stick || 0) + 2 * any_planks
+                : name.endsWith('_planks') ? plankable(name, counts) : (counts[name] || 0);
+            score += Math.min(have, need) / need;
+        }
+        if (score > best_score) {
+            best = ingredients;
+            best_score = score;
+        }
+    }
+    if (!best) return;
+    // sticks first: making them uses planks, which would otherwise come out of the planks the recipe itself needs
+    const entries = Object.entries(best).sort(([a], [b]) => (b === 'stick') - (a === 'stick'));
+    for (const [name, per] of entries) {
+        const missing = per * num - (inv()[name] || 0);
+        if (missing > 0 && (name === 'stick' || name.endsWith('_planks')))
+            await craftRecipe(bot, name, Math.ceil(missing / 4), depth + 1); // both recipes make 4
+    }
+}
+
+export async function craftRecipe(bot, itemName, num=1, _depth=0) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -146,10 +179,12 @@ export async function craftRecipe(bot, itemName, num=1) {
      **/
     let placedTable = false;
 
-    if (mc.getItemCraftingRecipes(itemName).length == 0) {
+    if ((mc.getItemCraftingRecipes(itemName) || []).length == 0) {
         log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
         return false;
     }
+    if (_depth < 2)
+        await craftMissingIngredients(bot, itemName, num, _depth);
 
     // get recipes that don't require a crafting table
     let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
@@ -163,16 +198,27 @@ export async function craftRecipe(bot, itemName, num=1) {
         craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
         if (craftingTable === null){
 
-            // Try to place crafting table
+            // Try to place crafting table, crafting one first if we can
             let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
+            if (!hasTable && _depth < 2)
+                hasTable = await craftRecipe(bot, 'crafting_table', 1, _depth + 1) && world.getInventoryCounts(bot)['crafting_table'] > 0;
             if (hasTable) {
-                let pos = world.getNearestFreeSpace(bot, 1, 6);
-                await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
-                craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
-                if (craftingTable) {
-                    recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
-                    placedTable = true;
+                // the nearest free space doesn't always take a block (underground it failed), so also try the spaces
+                // right around us. crafting without a table throws, and the model was shown the whole recipe
+                const here = bot.entity.position.floored();
+                const spots = [world.getNearestFreeSpace(bot, 1, 6), ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => here.offset(dx, 0, dz))];
+                for (const pos of spots) {
+                    if (!pos || bot.blockAt(pos)?.boundingBox !== 'empty' || bot.blockAt(pos.offset(0, -1, 0))?.boundingBox !== 'block') continue;
+                    await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
+                    craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                    if (craftingTable) break;
                 }
+                if (!craftingTable) {
+                    log(bot, `Couldn't place a crafting table to craft ${itemName}. Move to a more open spot and try again.`);
+                    return false;
+                }
+                recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
+                placedTable = true;
             }
             else {
                 log(bot, `Crafting ${itemName} requires a crafting table.`)
@@ -200,6 +246,14 @@ export async function craftRecipe(bot, itemName, num=1) {
     //Check that the agent has sufficient items to use the recipe `num` times.
     const inventory = world.getInventoryCounts(bot); //Items in the agents inventory
     const requiredIngredients = mc.ingredientsFromPrismarineRecipe(recipe); //Items required to use the recipe once.
+    // ingredients in the off-hand or crafting grid count as ours, but crafting only takes from the main inventory
+    // ("missing ingredient"), so move them there first
+    for (const name of Object.keys(requiredIngredients)) {
+        for (const slot of EXTRA_ITEM_SLOTS) {
+            if (bot.inventory.slots[slot]?.name === name && bot.inventory.emptySlotCount() > 0)
+                await bot.putAway(slot).catch(() => {});
+        }
+    }
     const craftLimit = mc.calculateLimitingResource(inventory, requiredIngredients);
     const craftNum = Math.min(craftLimit.num, num);
     const had = inventory[itemName] || 0;
@@ -343,7 +397,11 @@ export async function smeltItem(bot, itemName, num=1) {
 
         // fuel the furnace
         if (!furnace.fuelItem()) {
-            let fuel = mc.getSmeltingFuel(bot);
+            // the fuel that smelts the most, not just the first one found (logs were picked over a stack of planks)
+            let fuel = bot.inventory.items()
+                .filter(item => mc.getFuelSmeltOutput(item.name) > 0)
+                .sort((a, b) => b.count * mc.getFuelSmeltOutput(b.name) - a.count * mc.getFuelSmeltOutput(a.name))[0]
+                || mc.getSmeltingFuel(bot);
             if (!fuel) {
                 log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
                 bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
@@ -353,14 +411,21 @@ export async function smeltItem(bot, itemName, num=1) {
             }
             log(bot, `Using ${fuel.name} as fuel.`);
 
-            const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
+            let put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
 
             if (fuel.count < put_fuel) {
-                log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
-                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
-                if (placedFurnace)
-                    await collectBlock(bot, 'furnace', 1);
-                return false;
+                // smelt what the fuel allows rather than nothing: the first 3 ingots make the iron pickaxe
+                const can_smelt = Math.floor(fuel.count * mc.getFuelSmeltOutput(fuel.name));
+                if (can_smelt < 1) {
+                    log(bot, `You don't have enough ${fuel.name} to smelt ${itemName}.`);
+                    bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                    if (placedFurnace)
+                        await collectBlock(bot, 'furnace', 1);
+                    return false;
+                }
+                log(bot, `Only enough ${fuel.name} to smelt ${can_smelt} of the ${num} ${itemName}, smelting those.`);
+                num = can_smelt;
+                put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
             }
             await furnace.putFuel(fuel.type, null, put_fuel);
             log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
@@ -602,6 +667,10 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 log(bot, `${entity.name} got away.`);
                 return false;
             }
+            if (bot.health <= 8 && mc.isHostile(entity)) {
+                log(bot, `Too hurt to keep fighting ${entity.name}.`);
+                return false;
+            }
 
             if (isCreeperFusing(entity) && dist < 5) {
                 if (has_shield) {
@@ -615,7 +684,18 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 await sleep(100);
                 continue;
             }
-            lowerShield();
+            // block with the shield whenever we aren't swinging: between swings up close (blocks melee hits), and while
+            // walking up to an archer (blocks arrows). it comes down for each swing
+            const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
+            const swing_ready = dist <= reach && now - last_attack >= cooldown;
+            const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(entity.name);
+            if (has_shield && !swing_ready && (dist < 4 || (archer && dist < 16))) {
+                if (!shielding) bot.activateItem(true);
+                shielding = true;
+            }
+            else {
+                lowerShield();
+            }
 
             if (dist < best_dist - 0.5) {
                 best_dist = dist;
@@ -627,8 +707,7 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
             }
 
             setMode('chase');
-            const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
-            if (dist <= reach && now - last_attack >= cooldown) {
+            if (swing_ready) {
                 // critical hit: attack while falling after a jump. skip it in water/when the target is right on top of us
                 const can_crit = bot.entity.onGround && !bot.entity.isInWater && !bot.entity.isInLava && dist > 1.5 && entity.name !== 'creeper';
                 if (can_crit) {
@@ -859,6 +938,11 @@ export async function defendSelf(bot, range=9) {
     let enemy = nextEnemy();
     while (enemy) {
         if (bot.interrupt_code) return false;
+        // the decision to fight is made when it starts; if it goes badly, stop and let self defense hide or run
+        if (bot.health <= 8) {
+            log(bot, `Too hurt to keep fighting.`);
+            break;
+        }
         attacked = true;
         let killed = false;
         if (isRangedTarget(bot, enemy) && hasBowAndArrows(bot)) {
@@ -942,6 +1026,9 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // collectblock paths with plain pathfinder movements of its own unless given some, which swim through anything.
     // it changes the ones it gets, so it gets its own copy
     bot.collectBlock.movements = makeMovements(bot);
+    // collectblock turns dontCreateFlow off on the movements it's given, so its paths dug blocks next to and under
+    // water: up to 25x slower to dig down there, and the bot ran out of air. keep it on, whatever the plugin sets
+    Object.defineProperty(bot.collectBlock.movements, 'dontCreateFlow', { get: () => true, set: () => {} });
     for (const type of blocktypes) {
         const id = mc.getBlockId(type);
         if (id != null) bot.collectBlock.movements.blocksCantBreak.delete(id);
@@ -1682,8 +1769,6 @@ export async function goToGoal(bot, goal) {
     let movements = carefulMovements;
 
     const doorCheckInterval = startDoorInterval(bot);
-    // long or complicated paths need more thinking time than the default 5s
-    bot.pathfinder.thinkTimeout = 10000;
 
     const max_attempts = 3;
     try {
@@ -1752,35 +1837,41 @@ async function swimToShore(bot, goal=null) {
         log(bot, `Can't see any land to swim to.`);
         return false;
     }
-    const cost = p => p.distanceTo(pos) + (goal_xz ? 0.5 * Math.hypot(p.x - goal_xz.x, p.z - goal_xz.z) : 0);
+    // climbing out onto a ledge well above the water often fails, so prefer low banks (top at the water surface or
+    // one block above), and try the next one when a bank can't be climbed
+    const cost = p => p.distanceTo(pos) + (goal_xz ? 0.5 * Math.hypot(p.x - goal_xz.x, p.z - goal_xz.z) : 0) +
+        4 * Math.max(0, p.y - (water_top - 1));
     banks.sort((a, b) => cost(a) - cost(b));
-    const target = banks[0].offset(0.5, 1, 0.5);
-    log(bot, `Swimming to land at ${banks[0].offset(0, 1, 0)}.`);
 
     stopPathfinding(bot);
     const start = Date.now();
-    let best = Infinity, last_progress = Date.now();
     try {
-        while (Date.now() - start < 30000) {
-            if (bot.interrupt_code) return false;
-            const here = bot.entity.position;
-            const dist = Math.hypot(target.x - here.x, target.z - here.z);
-            if (!bot.entity.isInWater && bot.entity.onGround && (dist < 1.5 || here.y >= target.y - 0.5)) break;
-            // getting closer or rising up along the bank both count as progress
-            const remaining = dist + Math.max(0, target.y - here.y);
-            if (remaining < best - 0.3) {
-                best = remaining;
-                last_progress = Date.now();
+        for (const bank of banks.slice(0, 3)) {
+            const target = bank.offset(0.5, 1, 0.5);
+            log(bot, `Swimming to land at ${bank.offset(0, 1, 0)}.`);
+            let best = Infinity, last_progress = Date.now();
+            while (Date.now() - start < 30000) {
+                if (bot.interrupt_code) return false;
+                const here = bot.entity.position;
+                const dist = Math.hypot(target.x - here.x, target.z - here.z);
+                if (!bot.entity.isInWater && bot.entity.onGround && (dist < 1.5 || here.y >= target.y - 0.5)) break;
+                // getting closer or rising up along the bank both count as progress
+                const remaining = dist + Math.max(0, target.y - here.y);
+                if (remaining < best - 0.3) {
+                    best = remaining;
+                    last_progress = Date.now();
+                }
+                else if (Date.now() - last_progress > 5000) {
+                    log(bot, `Couldn't reach the bank.`);
+                    break;
+                }
+                await bot.lookAt(new Vec3(target.x, here.y + 0.5, target.z), true);
+                bot.setControlState('forward', dist > 0.3);
+                bot.setControlState('jump', true);
+                bot.setControlState('sprint', false);
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
-            else if (Date.now() - last_progress > 5000) {
-                log(bot, `Couldn't reach the bank.`);
-                return false;
-            }
-            await bot.lookAt(new Vec3(target.x, here.y + 0.5, target.z), true);
-            bot.setControlState('forward', dist > 0.3);
-            bot.setControlState('jump', true);
-            bot.setControlState('sprint', false);
-            await new Promise(resolve => setTimeout(resolve, 100));
+            if (!bot.entity.isInWater) break;
         }
     } finally {
         bot.clearControlStates();
@@ -1831,6 +1922,10 @@ export async function bunkerDown(bot) {
      * await skills.bunkerDown(bot);
      **/
     const start = bot.entity.position.floored();
+    if (bot.entity.isInWater) {
+        log(bot, `Can't bunker down in water, the hole would flood.`);
+        return false;
+    }
     // the two blocks we dig and the one we land on must be solid: no digging into lava, water or a cave drop
     for (let dy = 1; dy <= 3; dy++) {
         const block = bot.blockAt(start.offset(0, -dy, 0));
@@ -1840,10 +1935,6 @@ export async function bunkerDown(bot) {
         }
     }
     const scaffold = getScaffoldItem(bot);
-    if (!scaffold) {
-        log(bot, `Can't bunker down without a block to seal the hole (dirt or cobblestone).`);
-        return false;
-    }
     stopPathfinding(bot);
     for (let dy = 1; dy <= 2; dy++) {
         const block = bot.blockAt(start.offset(0, -dy, 0));
@@ -1859,9 +1950,39 @@ export async function bunkerDown(bot) {
             await new Promise(resolve => setTimeout(resolve, 50));
     }
     // seal the top: the old feet level, now two blocks above our feet
-    const sealed = await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true);
-    if (sealed) log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
-    return sealed;
+    if (scaffold && await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true)) {
+        log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
+        return true;
+    }
+    // nothing to seal it with: dig a pocket to the side and step into it, out of sight of archers above the hole
+    const bottom = start.offset(0, -2, 0);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const feet = bot.blockAt(bottom.offset(dx, 0, dz)), head = bot.blockAt(bottom.offset(dx, 1, dz));
+        const floor = bot.blockAt(bottom.offset(dx, -1, dz)), roof = bot.blockAt(bottom.offset(dx, 2, dz));
+        const ok = b => b && (b.boundingBox === 'empty' || b.diggable) && !isWaterBlock(b) && b.name !== 'lava';
+        if (!ok(feet) || !ok(head) || floor?.boundingBox !== 'block' || roof?.boundingBox !== 'block') continue;
+        try {
+            for (const b of [head, feet]) {
+                if (b.boundingBox === 'block') {
+                    await bot.tool.equipForBlock(b);
+                    await bot.dig(b);
+                }
+            }
+        } catch (err) {
+            continue;
+        }
+        const target = bottom.offset(dx + 0.5, 0, dz + 0.5);
+        for (let t = 0; t < 30 && Math.hypot(target.x - bot.entity.position.x, target.z - bot.entity.position.z) > 0.3; t++) {
+            await bot.lookAt(target.offset(0, 1.6, 0), true);
+            bot.setControlState('forward', true);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        bot.setControlState('forward', false);
+        log(bot, `Bunkered down in a pocket at ${bot.entity.position.floored()}, out of sight until it's safe.`);
+        return true;
+    }
+    log(bot, `Dug down to hide at ${bot.entity.position.floored()}, but couldn't seal the hole or dig a pocket.`);
+    return true;
 }
 
 export async function digOut(bot) {
@@ -2850,6 +2971,110 @@ async function centerOnBlock(bot) {
     }
 }
 
+async function moveToDryGround(bot, range=12) {
+    /* Walk to the nearest spot with no water within 2 blocks around it or 3 below, so digging down there won't
+       hit water. Returns true if we got there. */
+    const pos = bot.entity.position.floored();
+    const dry = (p) => {
+        for (let dx = -2; dx <= 2; dx++)
+            for (let dz = -2; dz <= 2; dz++)
+                for (let dy = -3; dy <= 1; dy++)
+                    if (isWaterBlock(bot.blockAt(p.offset(dx, dy, dz)))) return false;
+        return true;
+    };
+    const spots = bot.findBlocks({
+        matching: block => block && block.boundingBox === 'block' && !isWaterBlock(block),
+        useExtraInfo: block => {
+            const p = block.position;
+            if (Math.abs(p.y - (pos.y - 1)) > 3) return false;
+            const a1 = bot.blockAt(p.offset(0, 1, 0)), a2 = bot.blockAt(p.offset(0, 2, 0));
+            return a1?.boundingBox === 'empty' && a2?.boundingBox === 'empty' && dry(p);
+        },
+        maxDistance: range,
+        count: 1,
+    });
+    if (spots.length === 0) return false;
+    log(bot, `Moving away from the water to dig at ${spots[0].offset(0, 1, 0)}.`);
+    return await goToPosition(bot, spots[0].x, spots[0].y + 1, spots[0].z, 0);
+}
+
+export async function digStairsDown(bot, distance = 10, _find_dry_ground = true) {
+    /**
+     * Dig a staircase down the given number of blocks, so you can walk back up it later. Stops at lava, water or drops.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {int} distance, how many blocks down to go.
+     * @returns {Promise<boolean>} true if it got all the way down.
+     * @example
+     * await skills.digStairsDown(bot, 10);
+     **/
+    // a straight shaft down is a trap on the way back: climbing it means pillaring up one block at a time, which the
+    // pathfinder is slow and clumsy at. stairs can be walked back up
+    const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    const unsafe = b => !b || b.name === 'lava' || isWaterBlock(b) || DANGER_BLOCKS.includes(b.name);
+    let dir = null;
+    for (let i = 0; i < distance; i++) {
+        if (bot.interrupt_code) return false;
+        const pos = bot.entity.position.floored();
+        // a step: head height, feet height and one below in front of us, with solid ground under it, and no water
+        // or lava next to anything we open up
+        const stepOk = ([dx, dz]) => {
+            const blocks = [1, 0, -1].map(dy => bot.blockAt(pos.offset(dx, dy, dz)));
+            if (blocks.some(b => unsafe(b) || (b.boundingBox === 'block' && !b.diggable))) return false;
+            const floor = bot.blockAt(pos.offset(dx, -2, dz));
+            if (!floor || floor.boundingBox !== 'block' || unsafe(floor)) return false;
+            if (unsafe(bot.blockAt(pos.offset(dx, 2, dz)))) return false;
+            return blocks.every(b => dirs.every(([ox, oz]) => !unsafe(bot.blockAt(b.position.offset(ox, 0, oz))) ||
+                (ox === -dx && oz === -dz))); // the side we come from is us, not water
+        };
+        if (!dir || !stepOk(dir)) dir = dirs.find(stepOk);
+        if (!dir && i === 0 && _find_dry_ground && await moveToDryGround(bot)) {
+            // standing by water we can't dig down at all: start again from dry ground nearby
+            return await digStairsDown(bot, distance, false);
+        }
+        if (!dir) {
+            // a step needs more room than a shaft does, so dig the rest straight down (it stops at lava, water and
+            // drops too) rather than give up and wander off to dig somewhere else
+            log(bot, `Dug ${i} steps down, then no safe direction for stairs, so digging straight down.`);
+            return await digDown(bot, distance - i);
+        }
+        // gravel and sand above fall into the gap as soon as it opens, so clear the step again until it stays clear
+        for (let round = 0; round < 8; round++) {
+            let dug = false;
+            for (const dy of [1, 0, -1]) {
+                const b = bot.blockAt(pos.offset(dir[0], dy, dir[1]));
+                if (b.boundingBox !== 'block') continue;
+                if (!await breakBlockAt(bot, b.position.x, b.position.y, b.position.z)) {
+                    log(bot, `Failed to dig the staircase at ${b.position}.`);
+                    return false;
+                }
+                dug = true;
+            }
+            if (!dug) break;
+            await new Promise(resolve => setTimeout(resolve, 400));
+        }
+        // walk down into the step
+        const target = pos.offset(dir[0] + 0.5, -1, dir[1] + 0.5);
+        try {
+            for (let t = 0; t < 40; t++) {
+                if (bot.interrupt_code) return false;
+                const p = bot.entity.position;
+                if (Math.hypot(target.x - p.x, target.z - p.z) < 0.3 && p.y < pos.y - 0.5) break;
+                await bot.lookAt(new Vec3(target.x, p.y + 1.6, target.z), true);
+                bot.setControlState('forward', true);
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        } finally {
+            bot.setControlState('forward', false);
+        }
+        if (bot.entity.position.y > pos.y - 0.5) {
+            log(bot, `Couldn't step down the staircase at ${target.floored()}.`);
+            return false;
+        }
+    }
+    log(bot, `Dug a staircase ${distance} blocks down to ${bot.entity.position.floored()}.`);
+    return true;
+}
+
 export async function digDown(bot, distance = 10) {
     /**
      * Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.
@@ -3309,6 +3534,256 @@ export async function buildNetherPortal(bot) {
     }
     const inside = at(1, 1);
     log(bot, `Built and lit a nether portal at ${inside.x}, ${inside.y}, ${inside.z}. Remember this location to get home.`);
+    return true;
+}
+
+async function pourLiquid(bot, bucketName, pos, faceOffsets) {
+    /* Pour a water_bucket or lava_bucket into the empty block at pos by clicking the face of a solid neighbour that
+       touches it, like a player does. faceOffsets are the neighbours to try (Vec3 from pos), best first. Returns
+       true if the liquid is there afterwards. */
+    const liquid = bucketName === 'water_bucket' ? 'water' : 'lava';
+    const bucket = bot.inventory.items().find(i => i.name === bucketName);
+    if (!bucket) return false;
+    for (const off of faceOffsets) {
+        const neighbour = bot.blockAt(pos.plus(off));
+        if (!neighbour || neighbour.boundingBox !== 'block') continue;
+        const facePoint = neighbour.position.offset(0.5, 0.5, 0.5).minus(off.scaled(0.5));
+        await bot.lookAt(facePoint, true);
+        const aimed = bot.blockAtCursor(4.5);
+        if (!aimed || !aimed.position.equals(neighbour.position)) {
+            // something's in the way of this face
+            log(bot, `Can't reach the face of ${neighbour.name} at ${neighbour.position} to pour into ${pos}: aiming at ${aimed ? aimed.name + ' ' + aimed.position : 'nothing in reach'}.`);
+            continue;
+        }
+        await bot.equip(bucket, 'hand');
+        await bot.lookAt(facePoint, true);
+        bot.activateItem();
+        // a source block, not flowing liquid that was already there from an earlier pour
+        for (let t = 0; t < 10; t++) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const b = bot.blockAt(pos);
+            if (b?.name === liquid && b.metadata === 0) return true;
+        }
+    }
+    return false;
+}
+
+async function scoopLiquid(bot, pos) {
+    /* Pick the liquid source at pos back up with an empty bucket. Returns true if the bucket filled. */
+    const bucket = bot.inventory.items().find(i => i.name === 'bucket');
+    if (!bucket) return false;
+    const before = bot.inventory.items().filter(i => i.name.endsWith('_bucket') && i.name !== 'bucket').length;
+    await bot.equip(bucket, 'hand');
+    await bot.lookAt(pos.offset(0.5, 0.5, 0.5), true);
+    bot.activateItem();
+    for (let t = 0; t < 10; t++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (bot.inventory.items().filter(i => i.name.endsWith('_bucket') && i.name !== 'bucket').length > before) return true;
+    }
+    return false;
+}
+
+export async function castNetherPortal(bot) {
+    /**
+     * Build a lit nether portal without diamonds by casting its obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, a flint_and_steel and about 30 cobblestone (or other cheap blocks), with a lava pool nearby (common underground and near diamond level).
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if a lit portal was built, false otherwise.
+     * @example
+     * await skills.castNetherPortal(bot);
+     **/
+    // obsidian needs a diamond pickaxe to mine, and diamonds are a long way down. speedrunners cast the frame in
+    // place instead: pour lava into each frame slot, then water just above it, which turns the lava into obsidian
+    if (getDimension(bot) !== 'overworld') {
+        log(bot, `Cast the portal in the overworld: water evaporates in the nether.`);
+        return false;
+    }
+    const counts = () => world.getInventoryCounts(bot);
+    const scaffoldCount = () => SCAFFOLD_BLOCKS.reduce((n, name) => n + (counts()[name] || 0), 0);
+    const missing = [];
+    if (!counts()['water_bucket']) missing.push('a water_bucket');
+    if (!counts()['bucket'] && !counts()['lava_bucket']) missing.push('an empty bucket (3 iron_ingot) to carry lava');
+    if (!counts()['flint_and_steel'] && !counts()['fire_charge']) missing.push('a flint_and_steel (1 iron_ingot, 1 flint)');
+    if (scaffoldCount() < 28) missing.push(`about 30 cobblestone or other cheap blocks (you have ${scaffoldCount()})`);
+    if (missing.length > 0) {
+        log(bot, `To cast a nether portal you still need ${missing.join(', ')}.`);
+        return false;
+    }
+    // each frame block uses up a lava source (it doesn't flow back like water), so make sure there are enough to scoop
+    const scoopable = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 40)
+        .filter(b => isAirLike(bot.blockAt(b.position.offset(0, 1, 0))));
+    const lavaNear = scoopable[0];
+    if (scoopable.length < 12) {
+        log(bot, `Need a lava pool with at least 12 lava you can reach from above to cast a portal, found ${scoopable.length}. Lava is common underground, especially near diamond level (y=-54 and below), and in surface pools.`);
+        return false;
+    }
+
+    // frame layout: i across, j up, k back. j=0 is the ground row, so the top is in reach from the ground. a wall of
+    // cheap blocks at k=1 gives every lava and water pour a face to aim at; we stand at k=-2
+    const frame = [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]];
+    const interior = [[1, 1], [2, 1], [1, 2], [2, 2], [1, 3], [2, 3]];
+    const L = lavaNear.position;
+    let best = null;
+    for (const axis of ['x', 'z']) {
+        const across = axis === 'x' ? new Vec3(1, 0, 0) : new Vec3(0, 0, 1);
+        const back = axis === 'x' ? new Vec3(0, 0, 1) : new Vec3(1, 0, 0);
+        for (const flip of [1, -1]) {
+            const b = back.scaled(flip);
+            for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) for (let dy = -2; dy <= 2; dy++) {
+                const O = L.offset(dx, dy, dz);
+                const dist = O.distanceTo(L);
+                if (dist < 7 || dist > 14 || (best && dist >= best.score)) continue; // beyond the 7 blocks our water flows, or it turns the pool to obsidian
+                const at = (i, j, k) => O.plus(across.scaled(i)).offset(0, j, 0).plus(b.scaled(k));
+                let ok = true, score = dist;
+                for (let i = 0; i <= 3 && ok; i++) {
+                    if (bot.blockAt(at(i, -1, 0))?.boundingBox !== 'block') ok = false; // under the ground row
+                    // the wall's bottom row needs something under it to be placed on (or to be there already)
+                    if (bot.blockAt(at(i, 0, 1))?.boundingBox !== 'block' && bot.blockAt(at(i, -1, 1))?.boundingBox !== 'block') ok = false;
+                    for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5 && ok; j++) {
+                        const block = bot.blockAt(at(i, j, 0));
+                        if (!isAirLike(block)) {
+                            if (!block.diggable) ok = false;
+                            score += 2;
+                        }
+                    }
+                }
+                // the space between where we stand and the frame must be open, or it blocks aiming the pours
+                for (let i = 0; i <= 3 && ok; i++) for (let j = 1; j <= 5 && ok; j++)
+                    if (!isAirLike(bot.blockAt(at(i, j, -1)))) ok = false;
+                // somewhere to stand in front, on solid ground
+                const stand = at(1, 1, -2);
+                if (ok && (bot.blockAt(stand.offset(0, -1, 0))?.boundingBox !== 'block' || !isAirLike(bot.blockAt(stand)) ||
+                    !isAirLike(bot.blockAt(stand.offset(0, 1, 0))))) ok = false;
+                if (!ok || (best && score >= best.score)) continue;
+                // no liquid anywhere near the build (checked last, it's the most lookups)
+                for (let i = -1; i <= 4 && ok; i++) for (let j = -1; j <= 6 && ok; j++) for (let k = -2; k <= 2 && ok; k++) {
+                    const block = bot.blockAt(at(i, j, k));
+                    if (!block || block.name === 'water' || block.name === 'lava') ok = false;
+                }
+                if (ok) best = {score, at, stand};
+            }
+        }
+    }
+    if (!best) {
+        log(bot, `Couldn't find a clear, dry spot 7-14 blocks from the lava at ${L} to cast a portal. Try another lava pool.`);
+        return false;
+    }
+    const {at, stand} = best;
+    const frameBox = (p) => [...Array(6).keys()].some(i => [...Array(8).keys()].some(j => [0, 1].some(k => at(i - 1, j - 1, k).equals(p))));
+    log(bot, `Casting a nether portal at ${at(0, 0, 0)}, using the lava at ${L}.`);
+    const goStand = () => goToPosition(bot, stand.x, stand.y, stand.z, 0);
+    const scaffold = () => getScaffoldItem(bot)?.name;
+
+    // clear the frame slots and the space above them
+    for (let i = 0; i <= 3; i++) for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5; j++) {
+        if (bot.interrupt_code) return false;
+        const p = at(i, j, 0);
+        if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
+            log(bot, `Couldn't clear ${p} for the portal.`);
+            return false;
+        }
+    }
+    // the backing wall (bottom up, so each block has support), and the floor corners
+    for (let j = 0; j <= 5; j++) for (let i = 0; i <= 3; i++) {
+        if (bot.interrupt_code) return false;
+        const p = at(i, j, 1);
+        if (bot.blockAt(p)?.boundingBox !== 'block' && !(await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true))) {
+            log(bot, `Couldn't place the backing wall at ${p}.`);
+            return false;
+        }
+    }
+    for (const i of [0, 3]) {
+        const p = at(i, 0, 0);
+        if (bot.blockAt(p)?.boundingBox !== 'block' && !(await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true))) {
+            log(bot, `Couldn't place the portal corner at ${p}.`);
+            return false;
+        }
+    }
+
+    const fillLava = async () => {
+        if (counts()['lava_bucket']) return true;
+        // lava we can see from above: one walled in by rock can't be scooped up
+        const source = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 20)
+            .find(b => !frameBox(b.position) && isAirLike(bot.blockAt(b.position.offset(0, 1, 0))));
+        if (!source) return false;
+        await useToolOnBlock(bot, 'bucket', source);
+        // the bucket fills when the server says so, a moment after using it
+        for (let t = 0; t < 10 && !counts()['lava_bucket']; t++) await new Promise(resolve => setTimeout(resolve, 100));
+        return !!counts()['lava_bucket'];
+    };
+    const castAt = async (i, j) => {
+        const P = at(i, j, 0), W = at(i, j + 1, 0);
+        const toWall = at(i, j, 1).minus(P);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (bot.interrupt_code) return false;
+            if (bot.blockAt(P)?.name === 'obsidian') return true;
+            // a water source left from an earlier pour keeps flowing into the slots: scoop any up, then let the flowing
+            // water drain (a couple of seconds)
+            for (let si = 0; si <= 3; si++) for (let sj = 0; sj <= 6; sj++) for (const sk of [0, -1]) {
+                const s = bot.blockAt(at(si, sj, sk));
+                if (s?.name === 'water' && s.metadata === 0) {
+                    await goStand();
+                    await scoopLiquid(bot, s.position);
+                }
+            }
+            for (let t = 0; t < 40 && bot.blockAt(P)?.name === 'water'; t++) await new Promise(resolve => setTimeout(resolve, 100));
+            if (bot.blockAt(P)?.name === 'water') await scoopLiquid(bot, P);
+            // lava already in the slot from an attempt whose water didn't land just needs the water
+            if (bot.blockAt(P)?.name !== 'lava') {
+                if (!isAirLike(bot.blockAt(P)) && !(await breakBlockAt(bot, P.x, P.y, P.z))) return false; // cobblestone from a bad pour
+                if (!(await fillLava())) {
+                    log(bot, `Couldn't fill a bucket with lava.`);
+                    return false;
+                }
+                await goStand();
+                if (!(await pourLiquid(bot, 'lava_bucket', P, [toWall, new Vec3(0, -1, 0)]))) continue;
+            }
+            else {
+                await goStand();
+            }
+            // water just above the lava source turns it into obsidian
+            if (!(await pourLiquid(bot, 'water_bucket', W, [toWall]))) continue;
+            await new Promise(resolve => setTimeout(resolve, 300)); // enough to turn the lava, short enough that the water barely spreads
+            await scoopLiquid(bot, W);
+            await new Promise(resolve => setTimeout(resolve, 400));
+        }
+        return bot.blockAt(P)?.name === 'obsidian';
+    };
+    for (const [i, j] of frame) {
+        if (i !== 0 && i !== 3 && j === 4) {
+            // the top corners hold up nothing, but go in before the lintel so its water has somewhere to stop
+            for (const ci of [0, 3]) {
+                const p = at(ci, 4, 0);
+                if (bot.blockAt(p)?.boundingBox !== 'block') await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true);
+            }
+        }
+        if (!(await castAt(i, j))) {
+            log(bot, `Couldn't cast obsidian at ${at(i, j, 0)}.`);
+            return false;
+        }
+    }
+    // anything the water left behind inside (cobblestone from flowing lava) blocks the portal
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    for (const [i, j] of interior) {
+        const p = at(i, j, 0);
+        if (!isAirLike(bot.blockAt(p)) && bot.blockAt(p).name !== 'water') await breakBlockAt(bot, p.x, p.y, p.z);
+    }
+
+    // light it from the inside floor
+    const lighter = bot.inventory.items().find(i => i.name === 'flint_and_steel') || bot.inventory.items().find(i => i.name === 'fire_charge');
+    const floor = bot.blockAt(at(1, 0, 0));
+    await goStand();
+    await bot.equip(lighter, 'hand');
+    await bot.lookAt(floor.position.offset(0.5, 1, 0.5), true);
+    try {
+        await bot.activateBlock(floor, new Vec3(0, 1, 0));
+    } catch (err) { /* checked below */ }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (!interior.some(([i, j]) => bot.blockAt(at(i, j, 0))?.name === 'nether_portal')) {
+        log(bot, `Cast the frame at ${at(0, 0, 0)} but couldn't light it. Use flint_and_steel on the obsidian floor inside it.`);
+        return false;
+    }
+    const inside = at(1, 1, 0);
+    log(bot, `Cast and lit a nether portal at ${inside.x}, ${inside.y}, ${inside.z}. Remember this location to get home.`);
     return true;
 }
 

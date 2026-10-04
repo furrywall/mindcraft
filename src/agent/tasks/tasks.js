@@ -421,6 +421,10 @@ export class Task {
     }
 
     async setUpTask() {
+        // make it day first thing: the rest of the setup takes a few seconds, and a bot that logged in at night where
+        // the last run ended was shot by a skeleton before it was done
+        if (this.task_type === 'beat_game')
+            this.agent.bot.chat('/time set day');
         await this.agent.bot.chat(`/clear ${this.name}`);
         console.log(`Cleared ${this.name}'s inventory.`);
 
@@ -534,7 +538,8 @@ export class Task {
             console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
             return;
         }
-        const tries = [[pos, 1], [pos, 32], [pos, 128]];
+        // spreadplayers refuses a range of 1 ("too many entities for space"), so the tightest that works is a few blocks
+        const tries = [[pos, 4], [pos, 32], [pos, 128]];
         if (bot.spawnPoint) tries.push([bot.spawnPoint, 64]);
         for (const [center, range] of tries) {
             const moved = new Promise((resolve) => {

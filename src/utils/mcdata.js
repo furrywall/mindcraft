@@ -18,6 +18,9 @@ let Item = null;
 */
 
 export const WOOD_TYPES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry'];
+// stone and dirt that pile up from digging and are thrown away when the inventory fills (one stack of cobblestone
+// is kept for building and hiding). item_collecting leaves them on the ground so they aren't picked straight back up
+export const JUNK_ITEMS = ['dirt', 'granite', 'diorite', 'andesite', 'tuff', 'gravel', 'calcite', 'cobbled_deepslate'];
 export const MATCHING_WOOD_BLOCKS = [
     'log',
     'planks',

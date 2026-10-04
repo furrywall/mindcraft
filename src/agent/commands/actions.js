@@ -479,10 +479,10 @@ export const actionsList = [
     },
     {
         name: '!digDown',
-        description: 'Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.',
+        description: 'Digs a staircase down a specified distance, so you can walk back up it. Will stop if it reaches lava, water, or a drop.',
         params: {'distance': { type: 'int', description: 'Distance to dig down', domain: [1, Number.MAX_SAFE_INTEGER] }},
         perform: runAsAction(async (agent, distance) => {
-            await skills.digDown(agent.bot, distance)
+            await skills.digStairsDown(agent.bot, distance)
         })
     },
     {
@@ -536,6 +536,13 @@ export const actionsList = [
         description: 'Build and light a nether portal next to you. Needs 10 obsidian, flint_and_steel, and a few cobblestone/dirt.',
         perform: runAsAction(async (agent) => {
             await skills.buildNetherPortal(agent.bot);
+        })
+    },
+    {
+        name: '!castNetherPortal',
+        description: 'Build and light a nether portal WITHOUT diamonds: casts the obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, flint_and_steel, ~30 cobblestone, and lava nearby.',
+        perform: runAsAction(async (agent) => {
+            await skills.castNetherPortal(agent.bot);
         })
     },
     {
