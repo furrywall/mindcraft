@@ -23,12 +23,13 @@ function formatTime(ms) {
 }
 
 export class BeatGameTaskValidator {
-    constructor(data, agent, start_time=Date.now()) {
+    // splits come from the saved memory when the agent process restarts mid-run, so milestones keep their first time
+    constructor(data, agent, start_time=Date.now(), splits=[]) {
         this.data = data;
         this.agent = agent;
         this.start_time = start_time;
-        this.splits = []; // time of each milestone reached, as text
-        this.progress = 0; // number of milestones reached
+        this.splits = splits.slice(0, MILESTONES.length); // time of each milestone reached, as text
+        this.progress = this.splits.length; // number of milestones reached
         this.credits = false;
         this.listening_to = null;
         this.last_dragon_check = 0;

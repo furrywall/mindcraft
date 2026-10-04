@@ -53,12 +53,14 @@ export class Agent {
             save_data = this.history.load();
         }
         let taskStart = null;
+        let taskSplits = [];
         if (save_data) {
             taskStart = save_data.taskStart;
+            taskSplits = save_data.taskSplits || [];
         } else {
             taskStart = Date.now();
         }
-        this.task = new Task(this, settings.task, taskStart);
+        this.task = new Task(this, settings.task, taskStart, taskSplits);
         this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
         blacklistCommands(this.blocked_actions);
 
