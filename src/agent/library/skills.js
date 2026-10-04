@@ -3537,55 +3537,124 @@ export async function buildNetherPortal(bot) {
     return true;
 }
 
-async function pourLiquid(bot, bucketName, pos, faceOffsets) {
-    /* Pour a water_bucket or lava_bucket into the empty block at pos by clicking the face of a solid neighbour that
-       touches it, like a player does. faceOffsets are the neighbours to try (Vec3 from pos), best first. Returns
-       true if the liquid is there afterwards. */
+const FACE_NORMALS = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1), new Vec3(-1, 0, 0), new Vec3(1, 0, 0)];
+
+// a solid block the look ray actually meets, with the face it hits. the sync world raycast skips working out the face
+// when given a matcher, so do it here (the matcher gets the ray iterator)
+function solidHit(block, iter) {
+    if (block.boundingBox !== 'block') return false;
+    const hit = iter.intersect(block.shapes, block.position);
+    if (!hit) return false;
+    block.face = hit.face;
+    block.intersect = hit.pos;
+    return true;
+}
+
+function findPourAim(bot, pos) {
+    /* A point to look at so that a full bucket pours into pos. The server traces the look ray past any liquid to the
+       first solid block and puts the liquid next to the face it hits, so try points throughout pos, trace each the
+       same way, and keep the one with the most clearance from the cell's edges. Aiming at the middle of the backing
+       face grazed the edge of the opening, and the server put the lava in the cell in front of us instead. */
+    const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+    let best = null;
+    for (const a of [0.2, 0.35, 0.5, 0.65, 0.8]) for (const b of [0.2, 0.35, 0.5, 0.65, 0.8]) for (const c of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+        const point = pos.offset(a, b, c);
+        const hit = bot.world.raycast(eye, point.minus(eye).normalize(), 4.5, solidHit);
+        const normal = hit && FACE_NORMALS[hit.face];
+        if (!normal || !hit.position.plus(normal).equals(pos)) continue;
+        const margin = Math.min(a, 1 - a, b, 1 - b, c, 1 - c);
+        if (!best || margin > best.margin) best = {point, margin};
+    }
+    return best?.point;
+}
+
+async function pourLiquid(bot, bucketName, pos) {
+    /* Pour a water_bucket or lava_bucket into the empty block at pos, aiming so the server puts it there. Returns true
+       if a source of the liquid is there afterwards. A pour that lands somewhere else is scooped back up, so stray
+       lava doesn't spread towards us. */
     const liquid = bucketName === 'water_bucket' ? 'water' : 'lava';
     const bucket = bot.inventory.items().find(i => i.name === bucketName);
     if (!bucket) return false;
-    for (const off of faceOffsets) {
-        const neighbour = bot.blockAt(pos.plus(off));
-        if (!neighbour || neighbour.boundingBox !== 'block') continue;
-        const facePoint = neighbour.position.offset(0.5, 0.5, 0.5).minus(off.scaled(0.5));
-        await bot.lookAt(facePoint, true);
-        const aimed = bot.blockAtCursor(4.5);
-        if (!aimed || !aimed.position.equals(neighbour.position)) {
-            // something's in the way of this face
-            log(bot, `Can't reach the face of ${neighbour.name} at ${neighbour.position} to pour into ${pos}: aiming at ${aimed ? aimed.name + ' ' + aimed.position : 'nothing in reach'}.`);
-            continue;
-        }
-        await bot.equip(bucket, 'hand');
-        await bot.lookAt(facePoint, true);
-        bot.activateItem();
-        // a source block, not flowing liquid that was already there from an earlier pour
-        for (let t = 0; t < 10; t++) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            const b = bot.blockAt(pos);
-            if (b?.name === liquid && b.metadata === 0) return true;
-        }
+    const aim = findPourAim(bot, pos);
+    if (!aim) {
+        const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+        const hit = bot.world.raycast(eye, pos.offset(0.5, 0.5, 0.5).minus(eye).normalize(), 4.5, solidHit);
+        log(bot, `No way to aim a pour into ${pos} from ${bot.entity.position.floored()}: looking at its middle hits ${hit ? `${hit.name} ${hit.position} face ${hit.face}` : 'nothing in reach'}.`);
+        return false;
+    }
+    const sourcesNear = () => bot.findBlocks({ point: pos, matching: b => b && b.name === liquid && b.metadata === 0, maxDistance: 5, count: 30 })
+        .map(p => p.toString());
+    const before = new Set(sourcesNear());
+    await bot.equip(bucket, 'hand');
+    await bot.lookAt(aim, true);
+    bot.activateItem();
+    // a source block, not flowing liquid that was already there from an earlier pour
+    for (let t = 0; t < 10; t++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const b = bot.blockAt(pos);
+        if (b?.name === liquid && b.metadata === 0) return true;
+    }
+    const strays = bot.findBlocks({ point: pos, matching: b => b && b.name === liquid && b.metadata === 0, maxDistance: 5, count: 30 })
+        .filter(p => !before.has(p.toString()));
+    log(bot, `Poured ${bucketName} to ${pos}, but it landed at ${strays.join(' ') || 'nowhere we can see'}.`);
+    // stray water is scooped back (we only have the one bucket of it); stray lava is deleted, the pool has more
+    for (const stray of strays) {
+        if (liquid === 'water' && await scoopLiquid(bot, stray, 'water')) continue;
+        await deleteLiquid(bot, stray);
     }
     return false;
 }
 
-async function scoopLiquid(bot, pos) {
-    /* Pick the liquid source at pos back up with an empty bucket. Returns true if the bucket filled. */
+async function deleteLiquid(bot, pos) {
+    /* Get rid of a liquid source at pos by placing a block into it (that replaces the liquid) and digging the block back
+       out. More reliable than scooping it up, which needs a clean aim at the source, and safe for stray lava. */
+    const scaffold = getScaffoldItem(bot);
+    if (!scaffold || !(await placeBlock(bot, scaffold.name, pos.x, pos.y, pos.z, 'bottom', true))) return false;
+    return await breakBlockAt(bot, pos.x, pos.y, pos.z);
+}
+
+async function scoopLiquid(bot, pos, liquid) {
+    /* Pick up the liquid source at pos with an empty bucket, only if pos really holds a source of that liquid: aimed
+       at a block that had drained, the bucket picked up whatever liquid was behind it instead (once the frame's own
+       lava). Returns true if the bucket filled. */
+    const block = bot.blockAt(pos);
+    if (block?.name !== liquid || block.metadata !== 0) return false;
     const bucket = bot.inventory.items().find(i => i.name === 'bucket');
     if (!bucket) return false;
-    const before = bot.inventory.items().filter(i => i.name.endsWith('_bucket') && i.name !== 'bucket').length;
+    // an empty bucket's look ray stops at the first liquid source or solid block. aiming at the middle of water just
+    // above a block we'd cast went through that block, so find a point the ray reaches pos from
+    const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+    const firstHit = (blk, iter) => {
+        const source = (blk.name === 'water' || blk.name === 'lava') && blk.metadata === 0;
+        if (!source && blk.boundingBox !== 'block') return false;
+        return !!iter.intersect(source ? [[0, 0, 0, 1, 1, 1]] : blk.shapes, blk.position);
+    };
+    let aim = null;
+    for (const [a, b, c] of [[0.5, 0.5, 0.5], [0.5, 0.85, 0.5], [0.5, 0.85, 0.15], [0.5, 0.85, 0.85], [0.15, 0.85, 0.5], [0.85, 0.85, 0.5],
+        [0.5, 0.5, 0.15], [0.5, 0.5, 0.85], [0.15, 0.5, 0.5], [0.85, 0.5, 0.5], [0.5, 0.15, 0.5]]) {
+        const point = pos.offset(a, b, c);
+        const hit = bot.world.raycast(eye, point.minus(eye).normalize(), 4.5, firstHit);
+        if (hit && hit.position.equals(pos)) {
+            aim = point;
+            break;
+        }
+    }
+    if (!aim) return false;
+    const filled = () => world.getInventoryCounts(bot)[`${liquid}_bucket`] || 0;
+    const before = filled();
     await bot.equip(bucket, 'hand');
-    await bot.lookAt(pos.offset(0.5, 0.5, 0.5), true);
+    await bot.lookAt(aim, true);
     bot.activateItem();
     for (let t = 0; t < 10; t++) {
         await new Promise(resolve => setTimeout(resolve, 100));
-        if (bot.inventory.items().filter(i => i.name.endsWith('_bucket') && i.name !== 'bucket').length > before) return true;
+        if (filled() > before) return true;
     }
     return false;
 }
 
 export async function castNetherPortal(bot) {
     /**
-     * Build a lit nether portal without diamonds by casting its obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, a flint_and_steel and about 30 cobblestone (or other cheap blocks), with a lava pool nearby (common underground and near diamond level).
+     * Build a lit nether portal without diamonds by casting its obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, a flint_and_steel and about 36 cobblestone (or other cheap blocks), with a lava pool nearby (common underground and near diamond level).
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @returns {Promise<boolean>} true if a lit portal was built, false otherwise.
      * @example
@@ -3603,7 +3672,7 @@ export async function castNetherPortal(bot) {
     if (!counts()['water_bucket']) missing.push('a water_bucket');
     if (!counts()['bucket'] && !counts()['lava_bucket']) missing.push('an empty bucket (3 iron_ingot) to carry lava');
     if (!counts()['flint_and_steel'] && !counts()['fire_charge']) missing.push('a flint_and_steel (1 iron_ingot, 1 flint)');
-    if (scaffoldCount() < 28) missing.push(`about 30 cobblestone or other cheap blocks (you have ${scaffoldCount()})`);
+    if (scaffoldCount() < 34) missing.push(`about 36 cobblestone or other cheap blocks (you have ${scaffoldCount()})`);
     if (missing.length > 0) {
         log(bot, `To cast a nether portal you still need ${missing.join(', ')}.`);
         return false;
@@ -3611,7 +3680,6 @@ export async function castNetherPortal(bot) {
     // each frame block uses up a lava source (it doesn't flow back like water), so make sure there are enough to scoop
     const scoopable = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 40)
         .filter(b => isAirLike(bot.blockAt(b.position.offset(0, 1, 0))));
-    const lavaNear = scoopable[0];
     if (scoopable.length < 12) {
         log(bot, `Need a lava pool with at least 12 lava you can reach from above to cast a portal, found ${scoopable.length}. Lava is common underground, especially near diamond level (y=-54 and below), and in surface pools.`);
         return false;
@@ -3619,62 +3687,80 @@ export async function castNetherPortal(bot) {
 
     // frame layout: i across, j up, k back. j=0 is the ground row, so the top is in reach from the ground. a wall of
     // cheap blocks at k=1 gives every lava and water pour a face to aim at; we stand at k=-2
-    const frame = [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]];
     const interior = [[1, 1], [2, 1], [1, 2], [2, 2], [1, 3], [2, 3]];
-    const L = lavaNear.position;
-    let best = null;
-    for (const axis of ['x', 'z']) {
-        const across = axis === 'x' ? new Vec3(1, 0, 0) : new Vec3(0, 0, 1);
-        const back = axis === 'x' ? new Vec3(0, 0, 1) : new Vec3(1, 0, 0);
-        for (const flip of [1, -1]) {
-            const b = back.scaled(flip);
-            for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) for (let dy = -2; dy <= 2; dy++) {
-                const O = L.offset(dx, dy, dz);
-                const dist = O.distanceTo(L);
-                if (dist < 7 || dist > 14 || (best && dist >= best.score)) continue; // beyond the 7 blocks our water flows, or it turns the pool to obsidian
-                const at = (i, j, k) => O.plus(across.scaled(i)).offset(0, j, 0).plus(b.scaled(k));
-                let ok = true, score = dist;
-                for (let i = 0; i <= 3 && ok; i++) {
-                    if (bot.blockAt(at(i, -1, 0))?.boundingBox !== 'block') ok = false; // under the ground row
-                    // the wall's bottom row needs something under it to be placed on (or to be there already)
-                    if (bot.blockAt(at(i, 0, 1))?.boundingBox !== 'block' && bot.blockAt(at(i, -1, 1))?.boundingBox !== 'block') ok = false;
-                    for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5 && ok; j++) {
-                        const block = bot.blockAt(at(i, j, 0));
-                        if (!isAirLike(block)) {
-                            if (!block.diggable) ok = false;
-                            score += 2;
+    // try around a few lava blocks spread over the pool (or pools): rough caves often have no flat spot by the nearest
+    const anchors = [];
+    for (const b of scoopable) {
+        if (anchors.length >= 4) break;
+        if (anchors.every(a => a.distanceTo(b.position) >= 8)) anchors.push(b.position);
+    }
+    let best = null, L = anchors[0];
+    for (const anchor of anchors) {
+        if (best) break;
+        L = anchor;
+        for (const axis of ['x', 'z']) {
+            const across = axis === 'x' ? new Vec3(1, 0, 0) : new Vec3(0, 0, 1);
+            const back = axis === 'x' ? new Vec3(0, 0, 1) : new Vec3(1, 0, 0);
+            for (const flip of [1, -1]) {
+                const b = back.scaled(flip);
+                for (let dx = -14; dx <= 14; dx++) for (let dz = -14; dz <= 14; dz++) for (let dy = -2; dy <= 2; dy++) {
+                    const O = L.offset(dx, dy, dz);
+                    const dist = O.distanceTo(L);
+                    // beyond the ~7 blocks our water flows, or it turns the pool to obsidian
+                    if (dist < 7 || dist > 14 || (best && dist >= best.score)) continue;
+                    const at = (i, j, k) => O.plus(across.scaled(i)).offset(0, j, 0).plus(b.scaled(k));
+                    let ok = true, score = dist;
+                    for (let i = 0; i <= 3 && ok; i++) {
+                        if (bot.blockAt(at(i, -1, 0))?.boundingBox !== 'block') ok = false; // under the ground row
+                        // the wall's bottom row needs something under it to be placed on (or to be there already)
+                        if (bot.blockAt(at(i, 0, 1))?.boundingBox !== 'block' && bot.blockAt(at(i, -1, 1))?.boundingBox !== 'block') ok = false;
+                        for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5 && ok; j++) {
+                            const block = bot.blockAt(at(i, j, 0));
+                            if (!isAirLike(block)) {
+                                if (!block.diggable) ok = false;
+                                score += 2;
+                            }
                         }
                     }
+                    // the space between where we stand and the frame must be open, or it blocks aiming the pours
+                    for (let i = 0; i <= 3 && ok; i++) for (let j = 1; j <= 5 && ok; j++)
+                        if (!isAirLike(bot.blockAt(at(i, j, -1)))) ok = false;
+                    // places to stand in front, on solid ground; more than one gives more angles to aim from
+                    const stands = [1, 2, 0, 3].map(i => at(i, 1, -2)).filter(s => bot.blockAt(s.offset(0, -1, 0))?.boundingBox === 'block' &&
+                        isAirLike(bot.blockAt(s)) && isAirLike(bot.blockAt(s.offset(0, 1, 0))));
+                    if (ok && stands.length === 0) ok = false;
+                    if (!ok || (best && score >= best.score)) continue;
+                    // no liquid anywhere near the build (checked last, it's the most lookups)
+                    for (let i = -1; i <= 4 && ok; i++) for (let j = -1; j <= 6 && ok; j++) for (let k = -2; k <= 2 && ok; k++) {
+                        const block = bot.blockAt(at(i, j, k));
+                        if (!block || block.name === 'water' || block.name === 'lava') ok = false;
+                    }
+                    if (ok) best = {score, at, stands, across};
                 }
-                // the space between where we stand and the frame must be open, or it blocks aiming the pours
-                for (let i = 0; i <= 3 && ok; i++) for (let j = 1; j <= 5 && ok; j++)
-                    if (!isAirLike(bot.blockAt(at(i, j, -1)))) ok = false;
-                // somewhere to stand in front, on solid ground
-                const stand = at(1, 1, -2);
-                if (ok && (bot.blockAt(stand.offset(0, -1, 0))?.boundingBox !== 'block' || !isAirLike(bot.blockAt(stand)) ||
-                    !isAirLike(bot.blockAt(stand.offset(0, 1, 0))))) ok = false;
-                if (!ok || (best && score >= best.score)) continue;
-                // no liquid anywhere near the build (checked last, it's the most lookups)
-                for (let i = -1; i <= 4 && ok; i++) for (let j = -1; j <= 6 && ok; j++) for (let k = -2; k <= 2 && ok; k++) {
-                    const block = bot.blockAt(at(i, j, k));
-                    if (!block || block.name === 'water' || block.name === 'lava') ok = false;
-                }
-                if (ok) best = {score, at, stand};
             }
         }
     }
     if (!best) {
-        log(bot, `Couldn't find a clear, dry spot 7-14 blocks from the lava at ${L} to cast a portal. Try another lava pool.`);
+        log(bot, `Couldn't find a clear, dry spot on flat ground 7-14 blocks from the lava near ${L} to cast a portal. Try another lava pool, or flatten a 4x2 patch of ground about 10 blocks from this one.`);
         return false;
     }
-    const {at, stand} = best;
-    const frameBox = (p) => [...Array(6).keys()].some(i => [...Array(8).keys()].some(j => [0, 1].some(k => at(i - 1, j - 1, k).equals(p))));
+    const {at, stands, across} = best;
+    const inFrame = (p) => { for (let i = -1; i <= 4; i++) for (let j = -1; j <= 6; j++) for (let k = -1; k <= 1; k++) if (at(i, j, k).equals(p)) return true; return false; };
     log(bot, `Casting a nether portal at ${at(0, 0, 0)}, using the lava at ${L}.`);
-    const goStand = () => goToPosition(bot, stand.x, stand.y, stand.z, 0);
     const scaffold = () => getScaffoldItem(bot)?.name;
+    const place = async (p) => {
+        if (bot.blockAt(p)?.boundingBox === 'block') return true;
+        try {
+            return await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true);
+        } catch (err) {
+            return false; // stuck getting there; the caller reports it
+        }
+    };
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    // clear the frame slots and the space above them
-    for (let i = 0; i <= 3; i++) for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5; j++) {
+    // clear the frame slots above the ground and the space above them. the two floor slots are dug just before they're
+    // cast: holes in the ground under our feet tripped up the pathfinder while building the wall
+    for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
         if (bot.interrupt_code) return false;
         const p = at(i, j, 0);
         if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
@@ -3685,101 +3771,153 @@ export async function castNetherPortal(bot) {
     // the backing wall (bottom up, so each block has support), and the floor corners
     for (let j = 0; j <= 5; j++) for (let i = 0; i <= 3; i++) {
         if (bot.interrupt_code) return false;
-        const p = at(i, j, 1);
-        if (bot.blockAt(p)?.boundingBox !== 'block' && !(await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true))) {
-            log(bot, `Couldn't place the backing wall at ${p}.`);
+        if (!(await place(at(i, j, 1)))) {
+            log(bot, `Couldn't place the backing wall at ${at(i, j, 1)}.`);
             return false;
         }
     }
     for (const i of [0, 3]) {
-        const p = at(i, 0, 0);
-        if (bot.blockAt(p)?.boundingBox !== 'block' && !(await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true))) {
-            log(bot, `Couldn't place the portal corner at ${p}.`);
+        if (!(await place(at(i, 0, 0)))) {
+            log(bot, `Couldn't place the portal corner at ${at(i, 0, 0)}.`);
+            return false;
+        }
+    }
+    // reaching the top of the wall, the pathfinder can pillar up through the frame or the space in front of it, and a
+    // block left there walls off the slots from our pours: clear both again
+    for (const k of [0, -1]) for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
+        if (bot.interrupt_code) return false;
+        const p = at(i, j, k);
+        if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
+            log(bot, `Couldn't clear ${p} for the portal.`);
             return false;
         }
     }
 
+    // pour from whichever spot in front can aim at the face, trying the backing wall, then the block under, then the sides
+    const pour = async (bucketName, pos) => {
+        for (const s of stands) {
+            if (bot.interrupt_code) return false;
+            await goToPosition(bot, s.x, s.y, s.z, 0);
+            // still sliding to a stop, the server sees us a little off and the pour lands next to where we aimed
+            for (let t = 0; t < 10 && bot.entity.velocity.distanceTo(new Vec3(0, bot.entity.velocity.y, 0)) > 0.01; t++) await sleep(50);
+            await sleep(100);
+            if (await pourLiquid(bot, bucketName, pos)) return true;
+        }
+        return false;
+    };
     const fillLava = async () => {
         if (counts()['lava_bucket']) return true;
-        // lava we can see from above: one walled in by rock can't be scooped up
-        const source = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 20)
-            .find(b => !frameBox(b.position) && isAirLike(bot.blockAt(b.position.offset(0, 1, 0))));
-        if (!source) return false;
-        await useToolOnBlock(bot, 'bucket', source);
-        // the bucket fills when the server says so, a moment after using it
-        for (let t = 0; t < 10 && !counts()['lava_bucket']; t++) await new Promise(resolve => setTimeout(resolve, 100));
+        // lava we can see from above (one walled in by rock can't be scooped up), trying a few if a scoop doesn't take
+        const sources = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 20)
+            .filter(b => !inFrame(b.position) && isAirLike(bot.blockAt(b.position.offset(0, 1, 0)))).slice(0, 3);
+        for (const source of sources) {
+            const p = source.position;
+            await goToPosition(bot, p.x, p.y, p.z, 2.5);
+            await sleep(150);
+            if (await scoopLiquid(bot, p, 'lava')) return true;
+        }
         return !!counts()['lava_bucket'];
+    };
+    const tidyWater = async (P) => {
+        // a water source left from an earlier pour keeps flowing into the slots: scoop any up, then let the flowing
+        // water drain (a couple of seconds)
+        for (let i = -1; i <= 4; i++) for (let j = 0; j <= 6; j++) for (const k of [0, -1]) {
+            const s = at(i, j, k);
+            if (bot.blockAt(s)?.name === 'water' && bot.blockAt(s).metadata === 0) {
+                // keep it if it's the water we lost track of, otherwise get rid of it
+                if (!counts()['water_bucket'] && await scoopLiquid(bot, s, 'water')) continue;
+                await deleteLiquid(bot, s);
+            }
+        }
+        for (let t = 0; t < 40 && bot.blockAt(P)?.name === 'water'; t++) await sleep(100);
     };
     const castAt = async (i, j) => {
         const P = at(i, j, 0), W = at(i, j + 1, 0);
-        const toWall = at(i, j, 1).minus(P);
         for (let attempt = 0; attempt < 3; attempt++) {
             if (bot.interrupt_code) return false;
             if (bot.blockAt(P)?.name === 'obsidian') return true;
-            // a water source left from an earlier pour keeps flowing into the slots: scoop any up, then let the flowing
-            // water drain (a couple of seconds)
-            for (let si = 0; si <= 3; si++) for (let sj = 0; sj <= 6; sj++) for (const sk of [0, -1]) {
-                const s = bot.blockAt(at(si, sj, sk));
-                if (s?.name === 'water' && s.metadata === 0) {
-                    await goStand();
-                    await scoopLiquid(bot, s.position);
-                }
-            }
-            for (let t = 0; t < 40 && bot.blockAt(P)?.name === 'water'; t++) await new Promise(resolve => setTimeout(resolve, 100));
-            if (bot.blockAt(P)?.name === 'water') await scoopLiquid(bot, P);
-            // lava already in the slot from an attempt whose water didn't land just needs the water
+            // the water goes in the cell above, and a block there also hides the slot from our aim
+            const above = bot.blockAt(W);
+            if (above?.boundingBox === 'block' && above.name !== 'obsidian' && !(await breakBlockAt(bot, W.x, W.y, W.z))) return false;
+            await tidyWater(P);
             if (bot.blockAt(P)?.name !== 'lava') {
-                if (!isAirLike(bot.blockAt(P)) && !(await breakBlockAt(bot, P.x, P.y, P.z))) return false; // cobblestone from a bad pour
+                // cobblestone (from flowing lava meeting water) or anything else in the slot comes out first
+                if (!isAirLike(bot.blockAt(P)) && !(await breakBlockAt(bot, P.x, P.y, P.z))) return false;
                 if (!(await fillLava())) {
                     log(bot, `Couldn't fill a bucket with lava.`);
                     return false;
                 }
-                await goStand();
-                if (!(await pourLiquid(bot, 'lava_bucket', P, [toWall, new Vec3(0, -1, 0)]))) continue;
-            }
-            else {
-                await goStand();
+                if (!(await pour('lava_bucket', P))) continue;
             }
             // water just above the lava source turns it into obsidian
-            if (!(await pourLiquid(bot, 'water_bucket', W, [toWall]))) continue;
-            await new Promise(resolve => setTimeout(resolve, 300)); // enough to turn the lava, short enough that the water barely spreads
-            await scoopLiquid(bot, W);
-            await new Promise(resolve => setTimeout(resolve, 400));
+            if (!(await pour('water_bucket', W))) {
+                // don't leave lava in the slot to spread towards us: scoop it back and try again
+                await scoopLiquid(bot, P, 'lava');
+                continue;
+            }
+            await sleep(300); // enough to turn the lava, short enough that the water barely spreads
+            await scoopLiquid(bot, W, 'water');
+            await sleep(300);
         }
         return bot.blockAt(P)?.name === 'obsidian';
     };
-    for (const [i, j] of frame) {
-        if (i !== 0 && i !== 3 && j === 4) {
-            // the top corners hold up nothing, but go in before the lintel so its water has somewhere to stop
-            for (const ci of [0, 3]) {
-                const p = at(ci, 4, 0);
-                if (bot.blockAt(p)?.boundingBox !== 'block') await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true);
+
+    // the floor first, then fill the inside with blocks so nothing flows in while the sides and top are cast
+    const cast = async (slots) => {
+        for (const [i, j] of slots) {
+            if (!(await castAt(i, j))) {
+                log(bot, `Couldn't cast obsidian at ${at(i, j, 0)}.`);
+                return false;
             }
         }
-        if (!(await castAt(i, j))) {
-            log(bot, `Couldn't cast obsidian at ${at(i, j, 0)}.`);
+        return true;
+    };
+    if (!(await cast([[1, 0], [2, 0]]))) return false;
+    await tidyWater(at(1, 1, 0));
+    for (const [i, j] of interior) {
+        if (bot.blockAt(at(i, j, 0))?.name === 'water') await sleep(2000);
+        if (!(await place(at(i, j, 0)))) {
+            log(bot, `Couldn't fill the inside of the portal at ${at(i, j, 0)}.`);
             return false;
         }
     }
-    // anything the water left behind inside (cobblestone from flowing lava) blocks the portal
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!(await cast([[0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3]]))) return false;
+    // the top corners go in before the lintel so its water has something to stop on
+    for (const i of [0, 3]) await place(at(i, 4, 0));
+    if (!(await cast([[1, 4], [2, 4]]))) return false;
+
+    // dig out the filling, and anything else left inside
+    await tidyWater(at(1, 3, 0));
     for (const [i, j] of interior) {
         const p = at(i, j, 0);
-        if (!isAirLike(bot.blockAt(p)) && bot.blockAt(p).name !== 'water') await breakBlockAt(bot, p.x, p.y, p.z);
+        if (!isAirLike(bot.blockAt(p)) && bot.blockAt(p).name !== 'water' && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
+            log(bot, `Couldn't clear the inside of the portal at ${p}.`);
+            return false;
+        }
+    }
+    // fire can't be lit in water. placing a block into a cell deletes the water in it, and digging the block back out
+    // leaves air; then give any flowing water a moment to drain
+    for (let tries = 0; tries < 3; tries++) {
+        const wet = interior.map(([i, j]) => at(i, j, 0)).filter(p => bot.blockAt(p)?.name === 'water');
+        if (wet.length === 0) break;
+        for (const p of wet) {
+            if (await placeBlock(bot, scaffold(), p.x, p.y, p.z, 'bottom', true)) await breakBlockAt(bot, p.x, p.y, p.z);
+        }
+        await sleep(1500);
     }
 
     // light it from the inside floor
     const lighter = bot.inventory.items().find(i => i.name === 'flint_and_steel') || bot.inventory.items().find(i => i.name === 'fire_charge');
     const floor = bot.blockAt(at(1, 0, 0));
-    await goStand();
+    await goToPosition(bot, stands[0].x, stands[0].y, stands[0].z, 0);
     await bot.equip(lighter, 'hand');
     await bot.lookAt(floor.position.offset(0.5, 1, 0.5), true);
     try {
         await bot.activateBlock(floor, new Vec3(0, 1, 0));
     } catch (err) { /* checked below */ }
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await sleep(1000);
     if (!interior.some(([i, j]) => bot.blockAt(at(i, j, 0))?.name === 'nether_portal')) {
-        log(bot, `Cast the frame at ${at(0, 0, 0)} but couldn't light it. Use flint_and_steel on the obsidian floor inside it.`);
+        log(bot, `Cast the frame at ${at(0, 0, 0)} but couldn't light it (inside: ${interior.map(([i, j]) => bot.blockAt(at(i, j, 0))?.name).join(', ')}). Use flint_and_steel on the obsidian floor inside it.`);
         return false;
     }
     const inside = at(1, 1, 0);

@@ -375,6 +375,18 @@ function getGameProgress(bot) {
     const eyes = count('ender_eye');
     const eye_potential = eyes + Math.min(count('ender_pearl'), count('blaze_powder') + count('blaze_rod') * 2);
 
+    // what casting a nether portal still needs (see skills.castNetherPortal), and whether one is already built here
+    const buckets = count('bucket') + count('water_bucket') + count('lava_bucket');
+    const blocks = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'stone', 'andesite', 'diorite', 'granite', 'tuff', 'blackstone', 'basalt', 'end_stone', 'sandstone'].reduce((n, name) => n + count(name), 0);
+    const portal_kit = [];
+    if (buckets < 2) portal_kit.push(`${2 - buckets} more bucket(s) (3 iron_ingot each)`);
+    if (!has('water_bucket')) portal_kit.push('a water_bucket: fill an empty bucket at any water with !useOn("bucket", "water")');
+    if (!any('flint_and_steel', 'fire_charge')) portal_kit.push(has('flint')
+        ? 'flint_and_steel: !craftRecipe("flint_and_steel", 1)'
+        : 'flint_and_steel (1 iron_ingot and 1 flint: !collectBlocks("gravel", 8) until flint drops)');
+    if (blocks < 36) portal_kit.push(`${36 - blocks} more cobblestone`);
+    const portal_near = dimension === 'overworld' && !!world.getNearestBlock(bot, 'nether_portal', 24);
+
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
             // pick up from where we are, so a re-read doesn't send the bot back for logs it already turned into a pickaxe
@@ -396,22 +408,22 @@ function getGameProgress(bot) {
                 // say exactly how: "or explore caves" sent the bot wandering the surface instead of digging
                 // iron is at every height, and the nearest is usually close (a cave wall, just under the surface):
                 // collecting it digs its own way there, which beats a long staircase to y=16 first
-                : '!collectBlocks("iron_ore", 12) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
+                : '!collectBlocks("iron_ore", 15) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
                   (bot.entity.position.y > 24 ? `Only if it finds none, dig down to y=16 where iron is common with !digDown(${Math.round(bot.entity.position.y - 16)}) and try again. ` : '') +
-                  '12 covers the iron_pickaxe (3), bucket (3), shield (1), iron_sword (2) and flint_and_steel (1). Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
+                  '15 covers the iron_pickaxe (3), 2 buckets (6), shield (1), iron_sword (2) and flint_and_steel (1), plus spares. Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
-        {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
-            next: '!collectBlocks("diamond_ore", 3) to mine the nearest diamonds (deepslate ones count too): it digs its way there. ' +
-                (bot.entity.position.y > -40 ? `Only if it finds none, dig down toward y=-58 with !digDown(${Math.round(bot.entity.position.y + 58)}) and try again. ` : '') +
-                'Then !craftRecipe("diamond_pickaxe", 1).'},
-        {done: (has('obsidian', 10) && any('flint_and_steel', 'fire_charge')) || dimension !== 'overworld' || eyes >= 12, text: '10 obsidian and flint_and_steel',
-            next: 'Lava pools are common deep down, near diamond level: !makeObsidian(10) there (needs a water_bucket and the diamond_pickaxe). Craft flint_and_steel from iron_ingot and flint (from gravel) if you have none.'},
+        // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
+        {done: portal_kit.length === 0 || portal_near || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone)',
+            next: `To cast a nether portal without diamonds you still need: ${portal_kit.join('; ')}. Get it all in one trip.`},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'
                 ? 'Use !collectBlazeRods(7). It finds a fortress and kills blazes; bring armor, food, and a bow if you have one.'
-                : 'Build a nether portal (!buildNetherPortal), go to the nether (!enterPortal nether_portal), find a fortress and kill blazes.'},
+                : portal_near
+                ? 'Your portal is here: !enterPortal nether_portal, then !collectBlazeRods(7).'
+                : 'Find lava with !searchForBlock("lava", 128) (surface lava pools, or caves deep down near y=-54), then !castNetherPortal next to it: ' +
+                  'it casts the obsidian frame from lava and water and lights it, no diamonds needed. Then !enterPortal nether_portal, find a fortress and kill blazes.'},
         {done: eye_potential >= 12 || count('ender_pearl') >= 12, text: 'Ender pearls (12)',
             next: 'Use !collectEnderPearls(12). Endermen are common at night in the overworld and in warped forests in the nether.'},
         {done: eyes >= 12, text: '12 eyes of ender',
@@ -446,9 +458,9 @@ function getGameProgress(bot) {
     const need_food = food < 4 && (bot.food <= 12 || (bot.health < 14 && bot.food < 18));
     if (dimension === 'overworld' && night && on_surface && !steps[2].done) {
         // a bot without armor on the surface at night keeps dying to zombies, skeletons and creepers (night falls about
-        // 10 minutes into a fresh run). underground it's safe, and the iron and diamonds it needs next are down there
+        // 10 minutes into a fresh run). underground it's safe, and the iron and lava it needs next are down there
         survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
-            'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore for armor, coal_ore, diamonds deeper) until morning.';
+            'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore, coal_ore, gravel for flint; lava pools for the portal are deeper) until morning.';
     }
     else if (dimension === 'overworld' && steps[0].done && need_food) {
         if (raw_meat.length > 0)

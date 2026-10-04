@@ -220,9 +220,11 @@
         [
             {"role": "system", "content": "You are self-prompting with the goal: 'Beat the game by killing the ender dragon. Check !gameProgress to see the next step, do it, and repeat.'. Respond:"},
             {"role": "assistant", "content": "!gameProgress"},
-            {"role": "system", "content": "GAME PROGRESS (goal: kill the ender dragon)\n- Dimension: overworld\n- [x] Stone tools\n- [x] Iron pickaxe\n- [x] Sword and some armor\n- [x] Bow and arrows\n- [x] Diamond pickaxe (to mine obsidian)\n- [x] 10 obsidian and flint_and_steel\n- [ ] Blaze rods (6+)\nNext step: Build a nether portal (!buildNetherPortal), go to the nether (!enterPortal nether_portal), find a fortress and kill blazes."},
-            {"role": "assistant", "content": "Time for the nether. !buildNetherPortal"},
-            {"role": "system", "content": "Code output:\nBuilt and lit a nether portal at 112, 64, -40. Remember this location to get home."},
+            {"role": "system", "content": "GAME PROGRESS (goal: kill the ender dragon)\n- Dimension: overworld\n- [x] Stone tools\n- [x] Iron pickaxe\n- [x] Sword and some armor\n- [x] Bow and arrows\n- [x] Portal kit (2 buckets, flint_and_steel, 36 cobblestone)\n- [ ] Blaze rods (6+)\nNext step: Find lava with !searchForBlock(\"lava\", 128) (surface lava pools, or caves deep down near y=-54), then !castNetherPortal next to it: it casts the obsidian frame from lava and water and lights it, no diamonds needed. Then !enterPortal nether_portal, find a fortress and kill blazes."},
+            {"role": "assistant", "content": "Portal kit ready, now I need lava. !searchForBlock(\"lava\", 128)"},
+            {"role": "system", "content": "Code output:\nFound lava at (98, 11, -52)."},
+            {"role": "assistant", "content": "!castNetherPortal"},
+            {"role": "system", "content": "Code output:\nCasting a nether portal at (108, 11, -48), using the lava at (98, 11, -52).\nCast and lit a nether portal at 109, 12, -48. Remember this location to get home."},
             {"role": "assistant", "content": "Saving this spot so I can find my way back. !rememberHere(\"overworld_portal\")"}
         ]
     ],
