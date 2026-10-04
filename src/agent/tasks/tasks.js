@@ -538,7 +538,8 @@ export class Task {
             console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
             return;
         }
-        const tries = [[pos, 1], [pos, 32], [pos, 128]];
+        // spreadplayers refuses a range of 1 ("too many entities for space"), so the tightest that works is a few blocks
+        const tries = [[pos, 4], [pos, 32], [pos, 128]];
         if (bot.spawnPoint) tries.push([bot.spawnPoint, 64]);
         for (const [center, range] of tries) {
             const moved = new Promise((resolve) => {

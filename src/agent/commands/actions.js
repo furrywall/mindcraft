@@ -539,6 +539,13 @@ export const actionsList = [
         })
     },
     {
+        name: '!castNetherPortal',
+        description: 'Build and light a nether portal WITHOUT diamonds: casts the obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, flint_and_steel, ~30 cobblestone, and lava nearby.',
+        perform: runAsAction(async (agent) => {
+            await skills.castNetherPortal(agent.bot);
+        })
+    },
+    {
         name: '!enterPortal',
         description: 'Walk into the nearest portal to travel between dimensions.',
         params: {'portal_type': { type: 'string', description: 'Either "nether_portal" or "end_portal".' }},
