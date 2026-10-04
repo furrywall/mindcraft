@@ -104,7 +104,11 @@ const modes_list = [
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
                 say(agent, 'I\'m dying!');
                 execute(this, agent, async () => {
-                    await skills.moveAway(bot, 20);
+                    // run from whatever is hurting us; a random direction can lead straight into it
+                    if (world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 16))
+                        await skills.avoidEnemies(bot, 16);
+                    else
+                        await skills.moveAway(bot, 20);
                 });
             }
             else if (bot.health <= 10 && Date.now() - bot.lastDamageTime > 4000 && Date.now() - this.last_heal > 10000 &&
@@ -206,13 +210,26 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isThreat(agent.bot, entity), 8);
+            const bot = agent.bot;
+            const enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 8);
             // creepers and skeletons are worth engaging even without a clear walking path, they'll come to us
-            const engage = enemy && (enemy.position.distanceTo(agent.bot.entity.position) < 4 || await world.isClearPath(agent.bot, enemy));
-            if (engage) {
+            const engage = enemy && (enemy.position.distanceTo(bot.entity.position) < 4 || await world.isClearPath(bot, enemy));
+            if (!engage) return;
+            // a fight we can't win loses everything: bare hands against a zombie at night, or a crowd at low health.
+            // run instead, and come back when we've healed or have a weapon
+            const threats = world.getNearbyEntities(bot, 10).filter(entity => mc.isThreat(bot, entity)).length;
+            const weapon = Math.max(1, ...bot.inventory.items().map(item => mc.getMeleeDamage(item.name)));
+            const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2));
+            if (outmatched) {
+                say(agent, `Too dangerous to fight the ${enemy.name}, running!`);
+                execute(this, agent, async () => {
+                    await skills.avoidEnemies(bot, 16);
+                });
+            }
+            else {
                 say(agent, `Fighting ${enemy.name}!`);
                 execute(this, agent, async () => {
-                    await skills.defendSelf(agent.bot, 8);
+                    await skills.defendSelf(bot, 8);
                 });
             }
         }

@@ -2318,7 +2318,9 @@ export async function avoidEnemies(bot, distance=16) {
      **/
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), distance);
-    while (enemy) {
+    // a faster mob or an archer can keep up forever, and self_preservation (air, healing) is paused while we run
+    const start = Date.now();
+    while (enemy && Date.now() - start < 20000) {
         const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
         const inverted_goal = new pf.goals.GoalInvert(follow);
         bot.pathfinder.setMovements(makeMovements(bot));
