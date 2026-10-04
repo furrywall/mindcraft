@@ -1,6 +1,7 @@
 // Validator for "beat_game" tasks: the game is beaten when the credits roll, which happens when the bot walks
 // through the exit portal in the end. That portal only opens once the ender dragon is dead.
 // Until then the score is how far along the way to the dragon the bot got, so a run that times out still shows its progress.
+// Each milestone also prints a speedrun split: how long after the task started the bot got there.
 
 // in order. reaching a milestone counts all the ones before it as reached too (no need for a pickaxe once you hold 12 eyes)
 const MILESTONES = [
@@ -14,10 +15,19 @@ const MILESTONES = [
     {name: 'credits', reached: (s) => s.credits},
 ];
 
+function formatTime(ms) {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
 export class BeatGameTaskValidator {
-    constructor(data, agent) {
+    constructor(data, agent, start_time=Date.now()) {
         this.data = data;
         this.agent = agent;
+        this.start_time = start_time;
+        this.splits = []; // time of each milestone reached, as text
         this.progress = 0; // number of milestones reached
         this.credits = false;
         this.listening_to = null;
@@ -47,6 +57,20 @@ export class BeatGameTaskValidator {
         return this.dragon_dead;
     }
 
+    reachedMilestone(i) {
+        // milestones skipped on the way (like a pickaxe when starting with eyes of ender) get the same time
+        const time = formatTime(Date.now() - this.start_time);
+        for (let j = this.progress; j <= i; j++) {
+            this.splits.push(time);
+            console.log(`Speedrun split ${j + 1}/${MILESTONES.length}: ${MILESTONES[j].name} at ${time}`);
+        }
+        this.progress = i + 1;
+        if (this.progress === MILESTONES.length) {
+            console.log(`Beat the game in ${time}! Splits:`);
+            MILESTONES.forEach((m, j) => console.log(`  ${this.splits[j].padStart(8)}  ${m.name}`));
+        }
+    }
+
     validate() {
         try {
             const bot = this.agent.bot;
@@ -68,8 +92,7 @@ export class BeatGameTaskValidator {
             // go from the last milestone backwards, so the expensive dragon check only runs when it could count
             for (let i = MILESTONES.length - 1; i >= this.progress; i--) {
                 if (MILESTONES[i].reached(state)) {
-                    this.progress = i + 1;
-                    console.log(`Beat the game task: reached milestone '${MILESTONES[i].name}' (${this.progress}/${MILESTONES.length})`);
+                    this.reachedMilestone(i);
                     break;
                 }
             }

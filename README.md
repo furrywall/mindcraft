@@ -80,7 +80,7 @@ To run it as a task, use a fresh world (if the dragon is already dead, the exit 
 
 `node main.js --task_path tasks/basic/beat_game.json --task_id beat_the_game`
 
-The task succeeds when the credits roll after the bot goes through the exit portal. If it times out, the score shows how far the bot got (out of 8 milestones: stone pickaxe, iron pickaxe, the nether, a blaze rod, 12 eyes of ender, the end, the dragon, and the credits). `beat_the_game_with_kit` starts the bot with eyes of ender and gear for the dragon fight, to test just the stronghold and the dragon.
+`beat_the_game` is a speedrun from an empty inventory. The task succeeds when the credits roll after the bot goes through the exit portal. If it times out, the score shows how far the bot got (out of 8 milestones: stone pickaxe, iron pickaxe, the nether, a blaze rod, 12 eyes of ender, the end, the dragon, and the credits). Each milestone prints a speedrun split in the terminal, like `Speedrun split 3/8: entered the nether at 31:05`, and beating the game prints all the splits. `beat_the_game_with_kit` starts the bot with eyes of ender and gear for the dragon fight, to test just the stronghold and the dragon.
 
 
 # Configuration

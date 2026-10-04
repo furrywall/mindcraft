@@ -280,7 +280,7 @@ export class Task {
                 this.validator = new CookingCraftingTaskValidator(this.data, this.agent);
 
             } else if (this.task_type === 'beat_game') {
-                this.validator = new BeatGameTaskValidator(this.data, this.agent);
+                this.validator = new BeatGameTaskValidator(this.data, this.agent, this.taskStartTime);
             } else {
                 this.validator = null;
             }
