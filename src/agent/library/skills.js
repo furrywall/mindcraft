@@ -200,6 +200,14 @@ export async function craftRecipe(bot, itemName, num=1) {
     //Check that the agent has sufficient items to use the recipe `num` times.
     const inventory = world.getInventoryCounts(bot); //Items in the agents inventory
     const requiredIngredients = mc.ingredientsFromPrismarineRecipe(recipe); //Items required to use the recipe once.
+    // ingredients in the off-hand or crafting grid count as ours, but crafting only takes from the main inventory
+    // ("missing ingredient"), so move them there first
+    for (const name of Object.keys(requiredIngredients)) {
+        for (const slot of EXTRA_ITEM_SLOTS) {
+            if (bot.inventory.slots[slot]?.name === name && bot.inventory.emptySlotCount() > 0)
+                await bot.putAway(slot).catch(() => {});
+        }
+    }
     const craftLimit = mc.calculateLimitingResource(inventory, requiredIngredients);
     const craftNum = Math.min(craftLimit.num, num);
     const had = inventory[itemName] || 0;
