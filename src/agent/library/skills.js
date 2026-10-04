@@ -3826,6 +3826,7 @@ async function openCrystalCage(bot, crystal) {
         .filter(b => eye().distanceTo(b.position.offset(0.5, 0.5, 0.5)) < 4.5)
         .sort((a, b) => facing(a).side - facing(b).side || a.position.y - b.position.y);
     let broken = 0;
+    let approach_seen = null;
     for (const bar of near_face) {
         if (bot.interrupt_code) break;
         if (bot.health < 10) {
@@ -3833,8 +3834,17 @@ async function openCrystalCage(bot, crystal) {
             break;
         }
         if (comingForUs()) {
-            log(bot, `The dragon is coming, climbing back down.`);
-            break;
+            // heading in to land from far away, it takes 25s or more before it could come for us: enough to
+            // finish a small gap now we're up here (otherwise, with few crystals left, it lands so often we
+            // might never get one made)
+            const d = dragon();
+            const far_landing = d && dragonPhase(d) === DRAGON_PHASE.LANDING_APPROACH && !dragonHazards(bot).incoming &&
+                d.position.distanceTo(bot.entity.position) > 40;
+            approach_seen ??= Date.now();
+            if (!far_landing || broken >= 3 || Date.now() - approach_seen > 4000) {
+                log(bot, `The dragon is coming, climbing back down.`);
+                break;
+            }
         }
         if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
         if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
