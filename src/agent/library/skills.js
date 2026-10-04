@@ -2927,8 +2927,10 @@ export async function digStairsDown(bot, distance = 10) {
         };
         if (!dir || !stepOk(dir)) dir = dirs.find(stepOk);
         if (!dir) {
-            log(bot, `Dug ${i} steps down, but every way down from here runs into water, lava or a drop.`);
-            return i > 0;
+            // a step needs more room than a shaft does, so dig the rest straight down (it stops at lava, water and
+            // drops too) rather than give up and wander off to dig somewhere else
+            log(bot, `Dug ${i} steps down, then no safe direction for stairs, so digging straight down.`);
+            return await digDown(bot, distance - i);
         }
         // gravel and sand above fall into the gap as soon as it opens, so clear the step again until it stays clear
         for (let round = 0; round < 8; round++) {
