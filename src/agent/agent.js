@@ -3,7 +3,7 @@ import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
-import { initBot } from '../utils/mcdata.js';
+import { initBot, JUNK_ITEMS } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
 import { getNextStepHint } from './commands/queries.js';
 import { ActionManager } from './action_manager.js';
@@ -604,6 +604,24 @@ export class Agent {
         this.self_prompter.update(delta);
         await this.checkTaskDone();
         this.keepShieldInOffhand(delta);
+        this.tossJunkWhenFull(delta);
+    }
+
+    tossJunkWhenFull(delta) {
+        // digging fills the inventory with stone and dirt (one run had 187 cobblestone), and a full inventory makes
+        // collecting fail. when it's nearly full, between actions, throw away the junk and keep one stack of cobblestone
+        this.junk_check = (this.junk_check || 0) + delta;
+        if (this.junk_check < 10000 || !this.isIdle() || this.bot.currentWindow) return;
+        this.junk_check = 0;
+        if (this.bot.inventory.emptySlotCount() > 5) return;
+        const keep = { cobblestone: 64 };
+        (async () => {
+            for (const name of [...JUNK_ITEMS, ...Object.keys(keep)]) {
+                const have = this.bot.inventory.items().filter(i => i.name === name).reduce((n, i) => n + i.count, 0);
+                const extra = have - (keep[name] || 0);
+                if (extra > 0) await this.bot.toss(this.bot.registry.itemsByName[name].id, null, extra).catch(() => {});
+            }
+        })();
     }
 
     keepShieldInOffhand(delta) {
