@@ -166,13 +166,22 @@ export async function craftRecipe(bot, itemName, num=1) {
             // Try to place crafting table
             let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
             if (hasTable) {
-                let pos = world.getNearestFreeSpace(bot, 1, 6);
-                await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
-                craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
-                if (craftingTable) {
-                    recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
-                    placedTable = true;
+                // the nearest free space doesn't always take a block (underground it failed), so also try the spaces
+                // right around us. crafting without a table throws, and the model was shown the whole recipe
+                const here = bot.entity.position.floored();
+                const spots = [world.getNearestFreeSpace(bot, 1, 6), ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => here.offset(dx, 0, dz))];
+                for (const pos of spots) {
+                    if (!pos || bot.blockAt(pos)?.boundingBox !== 'empty' || bot.blockAt(pos.offset(0, -1, 0))?.boundingBox !== 'block') continue;
+                    await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
+                    craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                    if (craftingTable) break;
                 }
+                if (!craftingTable) {
+                    log(bot, `Couldn't place a crafting table to craft ${itemName}. Move to a more open spot and try again.`);
+                    return false;
+                }
+                recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
+                placedTable = true;
             }
             else {
                 log(bot, `Crafting ${itemName} requires a crafting table.`)
