@@ -360,7 +360,11 @@ export async function smeltItem(bot, itemName, num=1) {
 
         // fuel the furnace
         if (!furnace.fuelItem()) {
-            let fuel = mc.getSmeltingFuel(bot);
+            // the fuel that smelts the most, not just the first one found (logs were picked over a stack of planks)
+            let fuel = bot.inventory.items()
+                .filter(item => mc.getFuelSmeltOutput(item.name) > 0)
+                .sort((a, b) => b.count * mc.getFuelSmeltOutput(b.name) - a.count * mc.getFuelSmeltOutput(a.name))[0]
+                || mc.getSmeltingFuel(bot);
             if (!fuel) {
                 log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
                 bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
@@ -370,14 +374,21 @@ export async function smeltItem(bot, itemName, num=1) {
             }
             log(bot, `Using ${fuel.name} as fuel.`);
 
-            const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
+            let put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
 
             if (fuel.count < put_fuel) {
-                log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
-                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
-                if (placedFurnace)
-                    await collectBlock(bot, 'furnace', 1);
-                return false;
+                // smelt what the fuel allows rather than nothing: the first 3 ingots make the iron pickaxe
+                const can_smelt = Math.floor(fuel.count * mc.getFuelSmeltOutput(fuel.name));
+                if (can_smelt < 1) {
+                    log(bot, `You don't have enough ${fuel.name} to smelt ${itemName}.`);
+                    bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                    if (placedFurnace)
+                        await collectBlock(bot, 'furnace', 1);
+                    return false;
+                }
+                log(bot, `Only enough ${fuel.name} to smelt ${can_smelt} of the ${num} ${itemName}, smelting those.`);
+                num = can_smelt;
+                put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
             }
             await furnace.putFuel(fuel.type, null, put_fuel);
             log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
