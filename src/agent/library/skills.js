@@ -2887,6 +2887,69 @@ async function centerOnBlock(bot) {
     }
 }
 
+export async function digStairsDown(bot, distance = 10) {
+    /**
+     * Dig a staircase down the given number of blocks, so you can walk back up it later. Stops at lava, water or drops.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {int} distance, how many blocks down to go.
+     * @returns {Promise<boolean>} true if it got all the way down.
+     * @example
+     * await skills.digStairsDown(bot, 10);
+     **/
+    // a straight shaft down is a trap on the way back: climbing it means pillaring up one block at a time, which the
+    // pathfinder is slow and clumsy at. stairs can be walked back up
+    const dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    const unsafe = b => !b || b.name === 'lava' || isWaterBlock(b) || DANGER_BLOCKS.includes(b.name);
+    let dir = null;
+    for (let i = 0; i < distance; i++) {
+        if (bot.interrupt_code) return false;
+        const pos = bot.entity.position.floored();
+        // a step: head height, feet height and one below in front of us, with solid ground under it, and no water
+        // or lava next to anything we open up
+        const stepOk = ([dx, dz]) => {
+            const blocks = [1, 0, -1].map(dy => bot.blockAt(pos.offset(dx, dy, dz)));
+            if (blocks.some(b => unsafe(b) || (b.boundingBox === 'block' && !b.diggable))) return false;
+            const floor = bot.blockAt(pos.offset(dx, -2, dz));
+            if (!floor || floor.boundingBox !== 'block' || unsafe(floor)) return false;
+            if (unsafe(bot.blockAt(pos.offset(dx, 2, dz)))) return false;
+            return blocks.every(b => dirs.every(([ox, oz]) => !unsafe(bot.blockAt(b.position.offset(ox, 0, oz))) ||
+                (ox === -dx && oz === -dz))); // the side we come from is us, not water
+        };
+        if (!dir || !stepOk(dir)) dir = dirs.find(stepOk);
+        if (!dir) {
+            log(bot, `Dug ${i} steps down, but every way down from here runs into water, lava or a drop.`);
+            return i > 0;
+        }
+        for (const dy of [1, 0, -1]) {
+            const b = bot.blockAt(pos.offset(dir[0], dy, dir[1]));
+            if (b.boundingBox === 'block' && !await breakBlockAt(bot, b.position.x, b.position.y, b.position.z)) {
+                log(bot, `Failed to dig the staircase at ${b.position}.`);
+                return false;
+            }
+        }
+        // walk down into the step
+        const target = pos.offset(dir[0] + 0.5, -1, dir[1] + 0.5);
+        try {
+            for (let t = 0; t < 40; t++) {
+                if (bot.interrupt_code) return false;
+                const p = bot.entity.position;
+                if (Math.hypot(target.x - p.x, target.z - p.z) < 0.3 && p.y < pos.y - 0.5) break;
+                await bot.lookAt(new Vec3(target.x, p.y + 1.6, target.z), true);
+                bot.setControlState('forward', true);
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        } finally {
+            bot.setControlState('forward', false);
+        }
+        if (bot.entity.position.y > pos.y - 0.5) {
+            log(bot, `Couldn't step down the staircase at ${target.floored()}.`);
+            return false;
+        }
+    }
+    log(bot, `Dug a staircase ${distance} blocks down to ${bot.entity.position.floored()}.`);
+    return true;
+}
+
 export async function digDown(bot, distance = 10) {
     /**
      * Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.
