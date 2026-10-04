@@ -317,100 +317,110 @@ export async function smeltItem(bot, itemName, num=1) {
 
     console.log('smelting...');
     const furnace = await bot.openFurnace(furnaceBlock);
-    // check if the furnace is already smelting something
-    let input_item = furnace.inputItem();
-    if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
-        // TODO: check if furnace is currently burning fuel. furnace.fuel is always null, I think there is a bug.
-        // This only checks if the furnace has an input item, but it may not be smelting it and should be cleared.
-        log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
-        if (placedFurnace)
-            await collectBlock(bot, 'furnace', 1);
-        return false;
-    }
-    // check if the bot has enough items to smelt
-    let inv_counts = world.getInventoryCounts(bot);
-    if (!inv_counts[itemName] || inv_counts[itemName] < num) {
-        log(bot, `You do not have enough ${itemName} to smelt.`);
-        if (placedFurnace)
-            await collectBlock(bot, 'furnace', 1);
-        return false;
-    }
-
-    // fuel the furnace
-    if (!furnace.fuelItem()) {
-        let fuel = mc.getSmeltingFuel(bot);
-        if (!fuel) {
-            log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
+    // every way out of here, early returns and errors included, has to close the furnace: left open, later inventory
+    // actions ran against its slots and failed ("invalid operation" equipping a tool)
+    try {
+        // check if the furnace is already smelting something
+        let input_item = furnace.inputItem();
+        if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
+            // TODO: check if furnace is currently burning fuel. furnace.fuel is always null, I think there is a bug.
+            // This only checks if the furnace has an input item, but it may not be smelting it and should be cleared.
+            log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
+            bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
             if (placedFurnace)
                 await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        log(bot, `Using ${fuel.name} as fuel.`);
-
-        const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
-
-        if (fuel.count < put_fuel) {
-            log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
+        // check if the bot has enough items to smelt
+        let inv_counts = world.getInventoryCounts(bot);
+        if (!inv_counts[itemName] || inv_counts[itemName] < num) {
+            log(bot, `You do not have enough ${itemName} to smelt.`);
+            bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
             if (placedFurnace)
                 await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        await furnace.putFuel(fuel.type, null, put_fuel);
-        log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
-        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
-    }
-    // put the items in the furnace
-    await furnace.putInput(mc.getItemId(itemName), null, num);
-    // wait for the items to smelt
-    let total = 0;
-    let smelted_item = null;
-    await new Promise(resolve => setTimeout(resolve, 200));
-    let last_collected = Date.now();
-    while (total < num) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        if (furnace.outputItem()) {
-            smelted_item = await furnace.takeOutput();
-            if (smelted_item) {
-                total += smelted_item.count;
-                last_collected = Date.now();
+
+        // fuel the furnace
+        if (!furnace.fuelItem()) {
+            let fuel = mc.getSmeltingFuel(bot);
+            if (!fuel) {
+                log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
+                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                if (placedFurnace)
+                    await collectBlock(bot, 'furnace', 1);
+                return false;
+            }
+            log(bot, `Using ${fuel.name} as fuel.`);
+
+            const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
+
+            if (fuel.count < put_fuel) {
+                log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
+                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                if (placedFurnace)
+                    await collectBlock(bot, 'furnace', 1);
+                return false;
+            }
+            await furnace.putFuel(fuel.type, null, put_fuel);
+            log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
+            console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
+        }
+        // put the items in the furnace
+        await furnace.putInput(mc.getItemId(itemName), null, num);
+        // wait for the items to smelt
+        let total = 0;
+        let smelted_item = null;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        let last_collected = Date.now();
+        while (total < num) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (furnace.outputItem()) {
+                smelted_item = await furnace.takeOutput();
+                if (smelted_item) {
+                    total += smelted_item.count;
+                    last_collected = Date.now();
+                }
+            }
+            if (Date.now() - last_collected > 11000) {
+                break; // if nothing has been collected in 11 seconds, stop
+            }
+            if (bot.interrupt_code) {
+                break;
             }
         }
-        if (Date.now() - last_collected > 11000) {
-            break; // if nothing has been collected in 11 seconds, stop
+        // take all remaining in input/fuel slots
+        if (furnace.inputItem()) {
+            await furnace.takeInput();
         }
-        if (bot.interrupt_code) {
-            break;
+        if (furnace.fuelItem()) {
+            await furnace.takeFuel();
         }
-    }
-    // take all remaining in input/fuel slots
-    if (furnace.inputItem()) {
-        await furnace.takeInput();
-    }
-    if (furnace.fuelItem()) {
-        await furnace.takeFuel();
-    }
 
-    await bot.closeWindow(furnace);
+        await bot.closeWindow(furnace);
 
-    if (placedFurnace) {
-        await collectBlock(bot, 'furnace', 1);
+        if (placedFurnace) {
+            await collectBlock(bot, 'furnace', 1);
+        }
+        if (total === 0) {
+            log(bot, `Failed to smelt ${itemName}.`);
+            return false;
+        }
+        if (total < num) {
+            log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
+            return false;
+        }
+        // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
+        const output_name = mc.getItemName(smelted_item.type);
+        const expected = (inv_counts[output_name] || 0) + total;
+        if ((world.getInventoryCounts(bot)[output_name] || 0) < expected)
+            await resyncInventory(bot);
+        bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < expected;
+        log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
+        return true;
+    } finally {
+        if (bot.currentWindow === furnace) bot.closeWindow(furnace);
     }
-    if (total === 0) {
-        log(bot, `Failed to smelt ${itemName}.`);
-        return false;
-    }
-    if (total < num) {
-        log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
-        return false;
-    }
-    // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
-    const output_name = mc.getItemName(smelted_item.type);
-    const expected = (inv_counts[output_name] || 0) + total;
-    if ((world.getInventoryCounts(bot)[output_name] || 0) < expected)
-        await resyncInventory(bot);
-    bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < expected;
-    log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
-    return true;
 }
 
 export async function clearNearestFurnace(bot) {
