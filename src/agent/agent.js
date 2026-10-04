@@ -201,6 +201,22 @@ export class Agent {
         this.bot.pathfinder.thinkTimeout = 5000;
         this.bot.pathfinder.searchRadius = 160;
 
+        // equip waits for the server to confirm the inventory change with no time limit, so when that confirmation
+        // went missing a collectBlocks hung on equipping a pickaxe and couldn't even be stopped. give every equip
+        // (tools, weapons, the shield, food) 5 seconds, then resync the inventory with the server
+        const equip = this.bot.equip.bind(this.bot);
+        this.bot.equip = (item, destination) => {
+            let timer;
+            const timeout = new Promise((_, reject) => {
+                timer = setTimeout(() => {
+                    this.bot._client.write('close_window', {windowId: 0});
+                    this.bot._syncWindow?.(this.bot.inventory).catch(() => {});
+                    reject(new Error(`Equipping ${item?.name ?? 'an item'} timed out.`));
+                }, 5000);
+            });
+            return Promise.race([equip(item, destination), timeout]).finally(() => clearTimeout(timer));
+        };
+
         // change only these: replacing the whole options object dropped eatingTimeout, so the bot stopped eating as
         // soon as it started, and checkOnItemPickup. the default banned foods already cover raw chicken, rotten flesh
         // and golden apples (self_preservation saves those for healing)
