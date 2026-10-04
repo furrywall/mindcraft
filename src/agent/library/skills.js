@@ -1915,14 +1915,29 @@ export async function swimToAir(bot) {
             }
             else if (Date.now() - rising_at > 1200) {
                 // a ceiling: water doesn't flow upwards, so mining the block above our head makes a dry cell to
-                // put our head in, wherever it leads. not if water would pour into it, or sand or gravel drop in
+                // put our head in, wherever it leads. water next to that cell would pour in, so wall it off first
+                // (one bot drowned in a twisting flooded tunnel this way), and don't let sand or gravel drop in
                 const roof = bot.blockAt(bot.entity.position.offset(0, 2, 0).floored());
                 const wet = (b) => !b || isWaterBlock(b) || b.name === 'lava';
-                const safe_roof = roof?.boundingBox === 'block' && roof.diggable && !FALLING_BLOCKS.some(n => roof.name.includes(n)) &&
-                    [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].every(([dx, dy, dz]) => {
-                        const b = bot.blockAt(roof.position.offset(dx, dy, dz));
-                        return !wet(b) && !(dy === 1 && FALLING_BLOCKS.some(n => b.name.includes(n)));
-                    });
+                const falling = (b) => b && FALLING_BLOCKS.some(n => b.name.includes(n));
+                const around = [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].map(([dx, dy, dz]) => roof?.position.offset(dx, dy, dz));
+                let safe_roof = roof?.boundingBox === 'block' && roof.diggable && !falling(roof) && !falling(bot.blockAt(around[0]));
+                const scaffold = getScaffoldItem(bot);
+                for (const cell of safe_roof ? around : []) {
+                    if (!wet(bot.blockAt(cell))) continue;
+                    if (!scaffold || bot.blockAt(cell)?.name === 'lava') {
+                        safe_roof = false;
+                        break;
+                    }
+                    // the roof itself is the block to place against: the water cell is right next to it
+                    await bot.equip(scaffold, 'hand');
+                    bot.placeBlock(roof, cell.minus(roof.position)).catch(() => {});
+                    for (let t = 0; t < 8 && wet(bot.blockAt(cell)); t++) await new Promise(resolve => setTimeout(resolve, 50));
+                    if (wet(bot.blockAt(cell))) {
+                        safe_roof = false;
+                        break;
+                    }
+                }
                 if (safe_roof) {
                     try {
                         // mining while floating is 5 times slower again than underwater: stand on the floor for it
@@ -1934,7 +1949,6 @@ export async function swimToAir(bot) {
                         const feet = bot.entity.position.floored();
                         bot.setControlState('jump', true);
                         for (let t = 0; t < 30 && bot.entity.position.y < feet.y + 1.05; t++) await new Promise(resolve => setTimeout(resolve, 50));
-                        const scaffold = getScaffoldItem(bot);
                         if (scaffold && bot.entity.position.y >= feet.y + 1) {
                             await bot.equip(scaffold, 'hand');
                             bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(0, 1, 0)).catch(() => {});
