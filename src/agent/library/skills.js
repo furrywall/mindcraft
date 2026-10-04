@@ -1881,6 +1881,8 @@ async function swimToShore(bot, goal=null) {
     return ok;
 }
 
+const FALLING_BLOCKS = ['sand', 'gravel', 'concrete_powder'];
+
 export async function swimToAir(bot) {
     /**
      * Swim straight up to breathe when running out of air underwater, then swim to the nearest land.
@@ -1892,11 +1894,52 @@ export async function swimToAir(bot) {
     const headInWater = () => isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1.62, 0)));
     stopPathfinding(bot);
     const start = Date.now();
+    // a breath lasts 15 seconds and we're called with half of it gone, so give up on going straight up as soon as
+    // we stop rising: jumping for 10 seconds under a cave ceiling drowned the bot
+    let best_y = bot.entity.position.y, rising_at = Date.now();
     try {
         while (headInWater() && Date.now() - start < 10000) {
             if (bot.interrupt_code) return false;
             bot.setControlState('jump', true);
             await new Promise(resolve => setTimeout(resolve, 100));
+            if (bot.entity.position.y > best_y + 0.2) {
+                best_y = bot.entity.position.y;
+                rising_at = Date.now();
+            }
+            else if (Date.now() - rising_at > 1200) {
+                // a ceiling: water doesn't flow upwards, so mining the block above our head makes a dry cell to
+                // put our head in, wherever it leads. not if water would pour into it, or sand or gravel drop in
+                const roof = bot.blockAt(bot.entity.position.offset(0, 2, 0).floored());
+                const wet = (b) => !b || isWaterBlock(b) || b.name === 'lava';
+                const safe_roof = roof?.boundingBox === 'block' && roof.diggable && !FALLING_BLOCKS.some(n => roof.name.includes(n)) &&
+                    [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].every(([dx, dy, dz]) => {
+                        const b = bot.blockAt(roof.position.offset(dx, dy, dz));
+                        return !wet(b) && !(dy === 1 && FALLING_BLOCKS.some(n => b.name.includes(n)));
+                    });
+                if (safe_roof) {
+                    try {
+                        // mining while floating is 5 times slower again than underwater: stand on the floor for it
+                        bot.clearControlStates();
+                        for (let t = 0; t < 12 && !bot.entity.onGround; t++) await new Promise(resolve => setTimeout(resolve, 50));
+                        await bot.tool.equipForBlock(roof);
+                        await bot.dig(roof);
+                        // swim up into it and put a block where our feet were, or we sink straight back under
+                        const feet = bot.entity.position.floored();
+                        bot.setControlState('jump', true);
+                        for (let t = 0; t < 30 && bot.entity.position.y < feet.y + 1.05; t++) await new Promise(resolve => setTimeout(resolve, 50));
+                        const scaffold = getScaffoldItem(bot);
+                        if (scaffold && bot.entity.position.y >= feet.y + 1) {
+                            await bot.equip(scaffold, 'hand');
+                            bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(0, 1, 0)).catch(() => {});
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                        rising_at = Date.now();
+                        best_y = bot.entity.position.y;
+                        continue;
+                    } catch (err) { /* swim for it */ }
+                }
+                break;
+            }
         }
     } finally {
         bot.clearControlStates();
@@ -3357,6 +3400,8 @@ async function fillBucket(bot, liquid) {
             const hit = bot.world.raycast(eye, center.minus(eye).normalize(), eye.distanceTo(center) + 0.5,
                 blk => blk.boundingBox === 'block' || (blk.name === liquid && blk.metadata === 0));
             const feet = bot.entity.position.floored();
+            // never from below: mining under water lets it pour down on us, and one cave flooded and drowned the bot
+            if (p.y > feet.y || hit?.position.y < p.y) break;
             if (!hit || hit.position.equals(p) || hit.boundingBox !== 'block' || !hit.diggable ||
                 hit.position.equals(feet.offset(0, -1, 0))) break;
             log(bot, `${hit.name} at ${hit.position} is between you and the ${liquid}, mining it.`);
