@@ -228,15 +228,18 @@ const modes_list = [
             const has_bow = items.some(item => item.name === 'bow') && items.some(item => item.name.includes('arrow'));
             // archers keep hitting from range while we close in, and nothing blocks their arrows without a shield
             const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(enemy.name);
-            // in water there are no crits, we move slowly, and our air runs out: get out instead of fighting there
-            const outmatched = bot.health <= 8 || threats >= 4 || bot.entity.isInWater || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
+            // swimming there are no crits, we move slowly, and our air runs out: get out instead of fighting there.
+            // standing in shallow water is fine though: running from a drowned at a lake's edge every time cancelled
+            // the bot's search for lava over and over
+            const deep_water = bot.entity.isInWater && skills.isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1, 0)));
+            const outmatched = bot.health <= 8 || threats >= 4 || deep_water || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
                 (enemy.name === 'creeper' && !has_shield && !has_bow) || (archer && !has_shield && bot.health < 14);
             if (outmatched) {
                 // hurt at night there's no outrunning them all: dig in and seal the hole instead
                 const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
                 const hide = bot.health <= 8 || (night && bot.health <= 12);
                 say(agent, `Too dangerous to fight the ${enemy.name}, ${hide ? 'hiding' : 'running'}!`);
-                console.log(`[fight] not fighting ${enemy.name}: health ${bot.health}, ${threats} threats, weapon ${weapon}, water ${bot.entity.isInWater}, shield ${has_shield}, night ${night}`);
+                console.log(`[fight] not fighting ${enemy.name}: health ${bot.health}, ${threats} threats, weapon ${weapon}, deep water ${deep_water}, shield ${has_shield}, night ${night}`);
                 execute(this, agent, async () => {
                     if (!hide || !await skills.bunkerDown(bot))
                         await skills.avoidEnemies(bot, 16);
