@@ -1753,35 +1753,41 @@ async function swimToShore(bot, goal=null) {
         log(bot, `Can't see any land to swim to.`);
         return false;
     }
-    const cost = p => p.distanceTo(pos) + (goal_xz ? 0.5 * Math.hypot(p.x - goal_xz.x, p.z - goal_xz.z) : 0);
+    // climbing out onto a ledge well above the water often fails, so prefer low banks (top at the water surface or
+    // one block above), and try the next one when a bank can't be climbed
+    const cost = p => p.distanceTo(pos) + (goal_xz ? 0.5 * Math.hypot(p.x - goal_xz.x, p.z - goal_xz.z) : 0) +
+        4 * Math.max(0, p.y - (water_top - 1));
     banks.sort((a, b) => cost(a) - cost(b));
-    const target = banks[0].offset(0.5, 1, 0.5);
-    log(bot, `Swimming to land at ${banks[0].offset(0, 1, 0)}.`);
 
     stopPathfinding(bot);
     const start = Date.now();
-    let best = Infinity, last_progress = Date.now();
     try {
-        while (Date.now() - start < 30000) {
-            if (bot.interrupt_code) return false;
-            const here = bot.entity.position;
-            const dist = Math.hypot(target.x - here.x, target.z - here.z);
-            if (!bot.entity.isInWater && bot.entity.onGround && (dist < 1.5 || here.y >= target.y - 0.5)) break;
-            // getting closer or rising up along the bank both count as progress
-            const remaining = dist + Math.max(0, target.y - here.y);
-            if (remaining < best - 0.3) {
-                best = remaining;
-                last_progress = Date.now();
+        for (const bank of banks.slice(0, 3)) {
+            const target = bank.offset(0.5, 1, 0.5);
+            log(bot, `Swimming to land at ${bank.offset(0, 1, 0)}.`);
+            let best = Infinity, last_progress = Date.now();
+            while (Date.now() - start < 30000) {
+                if (bot.interrupt_code) return false;
+                const here = bot.entity.position;
+                const dist = Math.hypot(target.x - here.x, target.z - here.z);
+                if (!bot.entity.isInWater && bot.entity.onGround && (dist < 1.5 || here.y >= target.y - 0.5)) break;
+                // getting closer or rising up along the bank both count as progress
+                const remaining = dist + Math.max(0, target.y - here.y);
+                if (remaining < best - 0.3) {
+                    best = remaining;
+                    last_progress = Date.now();
+                }
+                else if (Date.now() - last_progress > 5000) {
+                    log(bot, `Couldn't reach the bank.`);
+                    break;
+                }
+                await bot.lookAt(new Vec3(target.x, here.y + 0.5, target.z), true);
+                bot.setControlState('forward', dist > 0.3);
+                bot.setControlState('jump', true);
+                bot.setControlState('sprint', false);
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
-            else if (Date.now() - last_progress > 5000) {
-                log(bot, `Couldn't reach the bank.`);
-                return false;
-            }
-            await bot.lookAt(new Vec3(target.x, here.y + 0.5, target.z), true);
-            bot.setControlState('forward', dist > 0.3);
-            bot.setControlState('jump', true);
-            bot.setControlState('sprint', false);
-            await new Promise(resolve => setTimeout(resolve, 100));
+            if (!bot.entity.isInWater) break;
         }
     } finally {
         bot.clearControlStates();
