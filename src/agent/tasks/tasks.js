@@ -290,8 +290,9 @@ export class Task {
                 this.blocked_actions = [];
             }
             this.restrict_to_inventory = !!this.data.restrict_to_inventory;
+            // a task's goal has to keep going until the task ends: !stfu turns self-prompting off just like !endGoal
             if (this.data.goal)
-                this.blocked_actions.push('!endGoal');
+                this.blocked_actions.push('!endGoal', '!stfu');
             if (this.conversation)
                 this.blocked_actions.push('!endConversation');
         }

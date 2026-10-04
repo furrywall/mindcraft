@@ -53,6 +53,9 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     if (placeCost !== null) movements.placeCost = placeCost;
     // falling more than 3 blocks hurts; allow more only when we're healthy
     movements.maxDropDown = bot.health > 14 ? 4 : 3;
+    // swimming is barely more than walking by default, so paths dove through flooded caves the bot can't climb back
+    // out of and it ran out of air. make water cost more than digging or bridging, so it only swims when it must
+    movements.liquidCost = 20;
 
     const scaffold = new Set(movements.scafoldingBlocks);
     for (const name of SCAFFOLD_BLOCKS) {
