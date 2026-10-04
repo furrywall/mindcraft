@@ -2897,7 +2897,34 @@ async function centerOnBlock(bot) {
     }
 }
 
-export async function digStairsDown(bot, distance = 10) {
+async function moveToDryGround(bot, range=12) {
+    /* Walk to the nearest spot with no water within 2 blocks around it or 3 below, so digging down there won't
+       hit water. Returns true if we got there. */
+    const pos = bot.entity.position.floored();
+    const dry = (p) => {
+        for (let dx = -2; dx <= 2; dx++)
+            for (let dz = -2; dz <= 2; dz++)
+                for (let dy = -3; dy <= 1; dy++)
+                    if (isWaterBlock(bot.blockAt(p.offset(dx, dy, dz)))) return false;
+        return true;
+    };
+    const spots = bot.findBlocks({
+        matching: block => block && block.boundingBox === 'block' && !isWaterBlock(block),
+        useExtraInfo: block => {
+            const p = block.position;
+            if (Math.abs(p.y - (pos.y - 1)) > 3) return false;
+            const a1 = bot.blockAt(p.offset(0, 1, 0)), a2 = bot.blockAt(p.offset(0, 2, 0));
+            return a1?.boundingBox === 'empty' && a2?.boundingBox === 'empty' && dry(p);
+        },
+        maxDistance: range,
+        count: 1,
+    });
+    if (spots.length === 0) return false;
+    log(bot, `Moving away from the water to dig at ${spots[0].offset(0, 1, 0)}.`);
+    return await goToPosition(bot, spots[0].x, spots[0].y + 1, spots[0].z, 0);
+}
+
+export async function digStairsDown(bot, distance = 10, _find_dry_ground = true) {
     /**
      * Dig a staircase down the given number of blocks, so you can walk back up it later. Stops at lava, water or drops.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -2926,6 +2953,10 @@ export async function digStairsDown(bot, distance = 10) {
                 (ox === -dx && oz === -dz))); // the side we come from is us, not water
         };
         if (!dir || !stepOk(dir)) dir = dirs.find(stepOk);
+        if (!dir && i === 0 && _find_dry_ground && await moveToDryGround(bot)) {
+            // standing by water we can't dig down at all: start again from dry ground nearby
+            return await digStairsDown(bot, distance, false);
+        }
         if (!dir) {
             // a step needs more room than a shaft does, so dig the rest straight down (it stops at lava, water and
             // drops too) rather than give up and wander off to dig somewhere else
