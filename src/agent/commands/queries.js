@@ -368,6 +368,9 @@ function getGameProgress(bot) {
     const dimension = (bot.game.dimension || 'overworld').replace('minecraft:', '');
     const armor = bot.inventory.slots.slice(5, 9).filter(Boolean).map(i => i.name);
 
+    // how many items the fuel we carry can smelt, using the best single fuel (a furnace burns one kind at a time)
+    const fuel_smelts = Math.floor(Math.max(0, ...Object.entries(inv).map(([name, c]) => c * mc.getFuelSmeltOutput(name))));
+
     // eyes of ender we have or can make right now
     const eyes = count('ender_eye');
     const eye_potential = eyes + Math.min(count('ender_pearl'), count('blaze_powder') + count('blaze_rod') * 2);
@@ -384,7 +387,11 @@ function getGameProgress(bot) {
             next: count('iron_ingot') >= 3
                 ? 'You have iron_ingot: craft the iron_pickaxe now.'
                 : count('raw_iron') + count('iron_ingot') >= 3
-                ? `Smelt all your raw_iron at once with !smeltItem("raw_iron", ${count('raw_iron')}), then craft the iron_pickaxe.`
+                // say how far the fuel goes: short of fuel for all of it, the bot went back to the surface for logs
+                // at night instead of smelting the 3 it needed for the pickaxe
+                ? (fuel_smelts >= 3
+                    ? `Smelt your raw_iron now with !smeltItem("raw_iron", ${Math.min(count('raw_iron'), fuel_smelts)}) (your fuel covers ${fuel_smelts}), then craft the iron_pickaxe.`
+                    : 'You need fuel to smelt your raw_iron: mine coal_ore nearby (8 smelts each), or turn logs into planks. Then smelt and craft the iron_pickaxe.')
                 // say exactly how: "or explore caves" sent the bot wandering the surface instead of digging
                 : (bot.entity.position.y > 24
                     ? `Iron is common around y=16, below you: dig down with !digDown(${Math.round(bot.entity.position.y - 16)}), then `
