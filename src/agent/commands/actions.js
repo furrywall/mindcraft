@@ -17,8 +17,12 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
             await actionFn(agent, ...args);
         };
         const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
-        if (code_return.interrupted && !code_return.timedout)
+        if (code_return.interrupted && !code_return.timedout) {
+            // the model never sees this output, so put it in the log to show what the action was doing when it was cut off
+            if (code_return.message)
+                console.log(`[interrupted] ${actionLabel} output so far:\n${code_return.message}`);
             return;
+        }
         return code_return.message;
     }
 

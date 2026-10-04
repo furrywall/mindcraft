@@ -32,15 +32,21 @@ const modes_list = [
         good_food: ['cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'cooked_salmon', 'cooked_cod',
             'golden_carrot', 'baked_potato', 'bread', 'cooked_rabbit', 'pumpkin_pie', 'mushroom_stew', 'apple', 'carrot'],
         last_heal: 0,
+        underwater_since: null,
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
+            const head_in_water = skills.isWaterBlock(blockAbove);
+            if (!head_in_water) this.underwater_since = null;
+            else if (!this.underwater_since) this.underwater_since = Date.now();
             // a full breath is 20 and lasts 15 seconds. come up while there's still time, whatever we're doing:
-            // paths to things underwater dive and never surface, and moving away when hurt swims along under the water
-            if (skills.isWaterBlock(blockAbove) && bot.oxygenLevel != null && bot.oxygenLevel < 12) {
+            // paths to things underwater dive and never surface, and moving away when hurt swims along under the water.
+            // the server doesn't always report air before it runs low, so time the dive as well
+            const low_air = bot.oxygenLevel != null && bot.oxygenLevel < 12;
+            if (head_in_water && (low_air || Date.now() - this.underwater_since > 7000)) {
                 say(agent, 'Coming up for air!');
                 execute(this, agent, async () => {
                     await skills.swimToAir(bot);
@@ -51,6 +57,13 @@ const modes_list = [
                 if (!bot.pathfinder.goal) {
                     bot.setControlState('jump', true);
                 }
+            }
+            else if (blockAbove.boundingBox === 'block' && blockAbove.diggable && Date.now() - bot.lastDamageTime < 3000) {
+                // suffocating inside a block, e.g. gravel fell on us: moving away can't work from in there, so dig out
+                say(agent, 'I\'m stuck in a block!');
+                execute(this, agent, async () => {
+                    await skills.digOut(bot);
+                });
             }
             else if (this.fall_blocks.some(name => blockAbove.name.includes(name))) {
                 execute(this, agent, async () => {
