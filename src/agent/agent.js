@@ -64,6 +64,7 @@ export class Agent {
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
+        this.actions.installInterruptFlag(this.bot);
         
         // Connection Handler
         const onDisconnect = (event, reason) => {
@@ -232,10 +233,28 @@ export class Agent {
 
     requestInterrupt() {
         this.bot.interrupt_code = true;
-        this.bot.stopDigging();
-        this.bot.collectBlock.cancelTask();
-        this.bot.pathfinder.stop();
-        this.bot.pvp.stop();
+        this.stopBotActivity();
+    }
+
+    stopBotActivity() {
+        // cancel whatever the bot is physically busy with, so awaiting actions settle right away
+        const bot = this.bot;
+        bot.stopDigging();
+        bot.collectBlock.cancelTask().catch(() => {});
+        bot.pvp.stop();
+        // pathfinder.stop() only raises a flag that is checked when the bot reaches its next path node, which
+        // never happens while it's stuck or still searching for a path. re-applying the movements makes the
+        // stop happen right now (rejecting any pending goto) and consumes the flag, so it can't cancel the next path.
+        if (bot.pathfinder.goal || bot.pathfinder.isMoving()) {
+            bot.pathfinder.stop();
+            bot.pathfinder.setMovements(bot.pathfinder.movements);
+        }
+        else {
+            bot.pathfinder.setGoal(null);
+        }
+        bot.clearControlStates();
+        if (bot.usingHeldItem) bot.deactivateItem();
+        if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
     }
 
     clearBotLogs() {
@@ -487,7 +506,7 @@ export class Agent {
         });
         this.bot.on('idle', () => {
             this.bot.clearControlStates();
-            this.bot.pathfinder.stop(); // clear any lingering pathfinder
+            this.bot.pathfinder.setGoal(null); // clear any lingering pathfinder goal (stop() would leave a stale flag)
             this.bot.modes.unPauseAll();
             setTimeout(() => {
                 if (this.isIdle()) {
