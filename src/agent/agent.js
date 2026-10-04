@@ -196,10 +196,10 @@ export class Agent {
 
         // Set up auto-eat
         // underground, where every block can be dug through, each step of the path search makes up to ~20 new nodes,
-        // and 10s of searching with no limit ran the agent out of memory (4 GB) mining iron. keep the default 5s, and
-        // skip routes costing over 160 more than the straight-line estimate: still room for long dug tunnels
+        // and 10s of searching ran the agent out of memory (4 GB) mining iron, so keep the default 5s. a searchRadius
+        // cap didn't stop it happening again, and with careful movements (digging a block costs ~22) it ruled out any
+        // dug route over ~7 blocks: "No path to the goal" on ore after ore
         this.bot.pathfinder.thinkTimeout = 5000;
-        this.bot.pathfinder.searchRadius = 160;
 
         // equip waits for the server to confirm the inventory change with no time limit, so when that confirmation
         // went missing a collectBlocks hung on equipping a pickaxe and couldn't even be stopped. give every equip

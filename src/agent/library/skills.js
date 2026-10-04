@@ -619,7 +619,7 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 log(bot, `${entity.name} got away.`);
                 return false;
             }
-            if (bot.health <= 6 && mc.isHostile(entity)) {
+            if (bot.health <= 8 && mc.isHostile(entity)) {
                 log(bot, `Too hurt to keep fighting ${entity.name}.`);
                 return false;
             }
@@ -881,7 +881,7 @@ export async function defendSelf(bot, range=9) {
     while (enemy) {
         if (bot.interrupt_code) return false;
         // the decision to fight is made when it starts; if it goes badly, stop and let self defense hide or run
-        if (bot.health <= 6) {
+        if (bot.health <= 8) {
             log(bot, `Too hurt to keep fighting.`);
             break;
         }

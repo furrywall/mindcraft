@@ -229,12 +229,12 @@ const modes_list = [
             // archers keep hitting from range while we close in, and nothing blocks their arrows without a shield
             const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(enemy.name);
             // in water there are no crits, we move slowly, and our air runs out: get out instead of fighting there
-            const outmatched = bot.health <= 6 || threats >= 4 || bot.entity.isInWater || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
+            const outmatched = bot.health <= 8 || threats >= 4 || bot.entity.isInWater || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
                 (enemy.name === 'creeper' && !has_shield && !has_bow) || (archer && !has_shield && bot.health < 14);
             if (outmatched) {
                 // hurt at night there's no outrunning them all: dig in and seal the hole instead
                 const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
-                const hide = bot.health <= 6 || (night && bot.health <= 12);
+                const hide = bot.health <= 8 || (night && bot.health <= 12);
                 say(agent, `Too dangerous to fight the ${enemy.name}, ${hide ? 'hiding' : 'running'}!`);
                 execute(this, agent, async () => {
                     if (!hide || !await skills.bunkerDown(bot))
