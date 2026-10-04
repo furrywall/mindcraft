@@ -394,10 +394,11 @@ function getGameProgress(bot) {
                     ? `Smelt your raw_iron now with !smeltItem("raw_iron", ${Math.min(count('raw_iron'), fuel_smelts)}) (your fuel covers ${fuel_smelts}), then craft the iron_pickaxe.`
                     : 'You need fuel to smelt your raw_iron: mine coal_ore nearby (8 smelts each), or turn logs into planks. Then smelt and craft the iron_pickaxe.')
                 // say exactly how: "or explore caves" sent the bot wandering the surface instead of digging
-                : (bot.entity.position.y > 24
-                    ? `Iron is common around y=16, below you: dig down with !digDown(${Math.round(bot.entity.position.y - 16)}), then `
-                    : 'You are deep enough for iron: ') +
-                  '!collectBlocks("iron_ore", 12) (use !searchForBlock("iron_ore", 64) if none is near). 12 covers the iron_pickaxe (3), bucket (3), shield (1), iron_sword (2) and flint_and_steel (1). Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
+                // iron is at every height, and the nearest is usually close (a cave wall, just under the surface):
+                // collecting it digs its own way there, which beats a long staircase to y=16 first
+                : '!collectBlocks("iron_ore", 12) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
+                  (bot.entity.position.y > 24 ? `Only if it finds none, dig down to y=16 where iron is common with !digDown(${Math.round(bot.entity.position.y - 16)}) and try again. ` : '') +
+                  '12 covers the iron_pickaxe (3), bucket (3), shield (1), iron_sword (2) and flint_and_steel (1). Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
