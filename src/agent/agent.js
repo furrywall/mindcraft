@@ -634,6 +634,9 @@ export class Agent {
         this.shield_check = (this.shield_check || 0) + delta;
         if (this.shield_check < 5000 || !this.isIdle() || this.bot.currentWindow) return;
         this.shield_check = 0;
+        // armor-manager only puts on armor that's picked up off the ground, so crafted armor (the chestplate, the
+        // golden boots that keep piglins calm) stayed in the inventory. put on whatever is best
+        try { this.bot.armorManager?.equipAll()?.catch?.(() => {}); } catch (err) { /* try again next time */ }
         if (this.bot.inventory.slots[45]?.name === 'shield') return;
         const shield = this.bot.inventory.items().find(item => item.name === 'shield');
         if (shield) this.bot.equip(shield, 'off-hand').catch(() => {});

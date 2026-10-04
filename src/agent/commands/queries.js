@@ -385,6 +385,15 @@ function getGameProgress(bot) {
         ? 'flint_and_steel: !craftRecipe("flint_and_steel", 1)'
         : 'flint_and_steel (1 iron_ingot and 1 flint: !collectBlocks("gravel", 8) until flint drops)');
     if (blocks < 36) portal_kit.push(`${36 - blocks} more cobblestone`);
+    // piglins leave you alone if you wear any gold armor: speedrunners wear golden boots, the cheapest piece
+    const gold_armor = ['golden_boots', 'golden_helmet', 'golden_leggings', 'golden_chestplate'];
+    const has_gold_armor = armor.some(a => gold_armor.includes(a)) || any(...gold_armor);
+    if (!has_gold_armor) {
+        const gold = count('gold_ingot') + count('raw_gold');
+        portal_kit.push(gold >= 4
+            ? `golden_boots: ${count('raw_gold') > 0 ? 'smelt your raw_gold, then ' : ''}!craftRecipe("golden_boots", 1). You put them on automatically, and piglins in the nether won't attack you while you wear gold`
+            : `golden_boots, so piglins in the nether don't attack you: 4 gold_ingot (you have ${gold}). !collectBlocks("gold_ore", ${4 - gold}) while you're mining at iron depth (y=0 to 30), then smelt the raw_gold with the iron`);
+    }
     const portal_near = dimension === 'overworld' && !!world.getNearestBlock(bot, 'nether_portal', 24);
     // a portal already built here stands in for the kit, but only with the gear: later steps tick off the earlier ones,
     // and a bot that started a run next to an old portal walked into the nether empty-handed
@@ -423,7 +432,7 @@ function getGameProgress(bot) {
                 // collecting it digs its own way there, which beats a long staircase to y=16 first
                 : '!collectBlocks("iron_ore", 15) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
                   (bot.entity.position.y > 24 ? `Only if it finds none, dig down to y=16 where iron is common with !digDown(${Math.round(bot.entity.position.y - 16)}) and try again. ` : '') +
-                  '15 covers the iron_pickaxe (3), 2 buckets (6), shield (1), iron_sword (2) and flint_and_steel (1), plus spares. Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
+                  '15 covers the iron_pickaxe (3), 2 buckets (6), shield (1), iron_sword (2) and flint_and_steel (1), plus spares. Don\'t explore the surface for iron. Grab coal you pass for fuel, and 4 gold_ore if you see it (golden boots keep piglins calm in the nether), then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             // only what's still missing: the same advice every time had the bot craft 4 shields and 2 swords
@@ -449,7 +458,7 @@ function getGameProgress(bot) {
                         : `That takes ${iron_needed} iron and you have ${iron_have}: mine ${iron_needed - iron_have} more iron_ore in one trip, then smelt it all at once.`);
             })()},
         // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
-        {done: portal_kit.length === 0 || (portal_near && geared) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone)',
+        {done: portal_kit.length === 0 || (portal_near && geared && has_gold_armor) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone, golden boots)',
             next: `To cast a nether portal without diamonds you still need: ${portal_kit.join('; ')}. Get it all in one trip.`},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'
