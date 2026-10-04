@@ -3683,31 +3683,44 @@ async function shootCrystal(bot, crystal, angles=null) {
     return !isAlive(bot, crystal);
 }
 
-async function guardRails(bot) {
-    /* Put blocks around our feet on top of a 1x1 tower, so knockback (the dragon's wings push hard) can't
-       throw us off. Each one goes on a support block placed against the side of the tower. Returns where we
-       put blocks (rails first), so they can be taken away again. */
+async function guardRails(bot, gap_angle=null) {
+    /* Box ourselves in on top of a 1x1 tower: a block on each side of our feet and one over our head. The
+       dragon's wings shove anything near them sideways and upwards every tick they touch it, which lifts you
+       right over a waist-high rail, so it takes the roof too. Rails go on support blocks placed against the side
+       of the tower; the roof goes on a little column off to one side (across from gap_angle, so it's out of the
+       way of shots through the gap). Returns where we put blocks, so they can be taken away again. */
     const feet = bot.entity.position.floored();
-    const rails = [], supports = [];
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        if (bot.interrupt_code) break;
-        const side = bot.blockAt(feet.offset(dx, 0, dz));
-        if (!side || side.boundingBox === 'block') continue;
-        // being pushed onto the top of the pillar next to us is fine
-        if (['obsidian', 'bedrock'].includes(bot.blockAt(feet.offset(dx, -1, dz))?.name)) continue;
-        const scaffold = getScaffoldItem(bot);
-        if (!scaffold) break;
+    const placed = [];
+    const scaffold = () => getScaffoldItem(bot);
+    const place = async (against, face, at) => {
+        if (bot.interrupt_code || !scaffold()) return false;
+        if (bot.blockAt(at)?.boundingBox === 'block') return true;
         try {
-            await bot.equip(scaffold, 'hand');
-            if (bot.blockAt(feet.offset(dx, -1, dz))?.boundingBox !== 'block') {
-                await bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(dx, 0, dz));
-                supports.push(feet.offset(dx, -1, dz));
-            }
-            await bot.placeBlock(bot.blockAt(feet.offset(dx, -1, dz)), new Vec3(0, 1, 0));
-            rails.push(feet.offset(dx, 0, dz));
-        } catch (err) { /* do the other sides anyway */ }
+            await bot.equip(scaffold(), 'hand');
+            await bot.placeBlock(bot.blockAt(against), face);
+        } catch (err) { /* it often places anyway */ }
+        if (bot.blockAt(at)?.boundingBox !== 'block') return false;
+        placed.push(at);
+        return true;
+    };
+    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (const [dx, dz] of sides) {
+        const rail = feet.offset(dx, 0, dz), support = feet.offset(dx, -1, dz);
+        if (bot.blockAt(rail)?.boundingBox === 'block') continue;
+        if (bot.blockAt(support)?.boundingBox !== 'block' && !(await place(feet.offset(0, -1, 0), new Vec3(dx, 0, dz), support))) continue;
+        await place(support, new Vec3(0, 1, 0), rail);
     }
-    return [...rails, ...supports];
+    // the roof: two blocks up off a rail across from the gap, then one across over our head
+    const across = gap_angle === null ? sides : [...sides].sort((a, b) =>
+        Math.abs(a[0] * Math.cos(gap_angle) + a[1] * Math.sin(gap_angle)) - Math.abs(b[0] * Math.cos(gap_angle) + b[1] * Math.sin(gap_angle)));
+    for (const [dx, dz] of across) {
+        const rail = feet.offset(dx, 0, dz);
+        if (bot.blockAt(rail)?.boundingBox !== 'block') continue;
+        if (!(await place(rail, new Vec3(0, 1, 0), rail.offset(0, 1, 0)))) continue;
+        if (!(await place(rail.offset(0, 1, 0), new Vec3(0, 1, 0), rail.offset(0, 2, 0)))) continue;
+        if (await place(rail.offset(0, 2, 0), new Vec3(-dx, 0, -dz), feet.offset(0, 2, 0))) break;
+    }
+    return placed;
 }
 
 async function openCrystalCage(bot, crystal) {
@@ -3788,14 +3801,15 @@ async function openCrystalCage(bot, crystal) {
     const start = bot.entity.position.clone();
     const knockedOff = () => Math.hypot(bot.entity.position.x - start.x, bot.entity.position.z - start.z) > 1.5;
     let rails = [];
+    // the roof, and anything left floating in line with the gap, would be in the way of our shots through it
+    const inTheWay = (p) => {
+        const dx = p.x - Math.floor(start.x), dz = p.z - Math.floor(start.z);
+        return (dx === 0 && dz === 0) || Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) >= 0.7;
+    };
     const climbDown = async (why) => {
         if (why) log(bot, why);
-        // rails left floating in line with the gap would be in the way of our shots, so take those away again
-        const feet = bot.entity.position.floored();
-        for (const p of rails) {
+        for (const p of [...rails].reverse().filter(inTheWay)) {
             if (bot.interrupt_code) break;
-            const dx = p.x - feet.x, dz = p.z - feet.z;
-            if (Math.abs(dx * Math.cos(angle) + dz * Math.sin(angle)) < 0.7) continue;
             if (bot.blockAt(p)?.boundingBox === 'block') await breakBlockAt(bot, p.x, p.y, p.z);
         }
         const y = Math.floor(bot.entity.position.y);
@@ -3811,7 +3825,7 @@ async function openCrystalCage(bot, crystal) {
         await climbDown(comingForUs() ? `The dragon is coming, climbing back down.` : null);
         return later ? 'later' : null;
     }
-    rails = await guardRails(bot);
+    rails = await guardRails(bot, angle);
 
     // the bars on the side facing us, level with the crystal; the middle ones first, that's where we shoot through
     const dir = {x: Math.cos(angle), z: Math.sin(angle)};
@@ -3851,7 +3865,7 @@ async function openCrystalCage(bot, crystal) {
         // every bar up here is time the dragon has to come back: stop as soon as there's a way to shoot it
         // through the gap from the ground (once our tower and its rails are gone)
         if (broken >= 3 && broken % 2 === 1) {
-            const going = new Set(rails.map(p => cellKey(p.x, p.y, p.z)));
+            const going = new Set(rails.filter(inTheWay).map(p => cellKey(p.x, p.y, p.z)));
             for (let y = start_y; y <= Math.floor(bot.entity.position.y); y++) going.add(cellKey(Math.floor(start.x), y, Math.floor(start.z)));
             const gap = [angle, angle + 0.15, angle - 0.15, angle + 0.3, angle - 0.3];
             if (await planCrystalShot(bot, crystal, getPillarInfo(bot, crystal), gap, [], going)) break;
