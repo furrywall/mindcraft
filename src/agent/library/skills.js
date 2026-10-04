@@ -3770,8 +3770,6 @@ async function openCrystalCage(bot, crystal) {
         const dist = d.position.distanceTo(bot.entity.position);
         if (dist < 20 || dragonHazards(bot).incoming) return true;
         const phase = dragonPhase(d);
-        // on its way to perch it flies to the portal first, and only looks for us once it has landed
-        if (phase === DRAGON_PHASE.LANDING_APPROACH) return dist < 50;
         return phase !== null && ![DRAGON_PHASE.HOLDING_PATTERN, DRAGON_PHASE.TAKEOFF, DRAGON_PHASE.HOVERING].includes(phase);
     };
     for (let t = 0; t < 40 && !dragonAway(); t++) {
@@ -4099,15 +4097,60 @@ function strandedHigh(bot) {
 
 async function getDownSafely(bot) {
     /* Dig straight down through whatever we're stuck on top of. Slow through obsidian, but the walls of the hole
-       also keep the dragon's wings from throwing us around. Returns false if we couldn't. */
+       also keep the dragon's wings from throwing us around. Standing on a lone block with nothing under it,
+       ride a waterfall down instead. Returns false if we couldn't. */
     const here = bot.entity.position;
     let ground = null;
     for (let a = 0; a < 8 && ground === null; a++)
         ground = groundAt(bot, here.x + Math.cos(a * Math.PI / 4) * 7, here.z + Math.sin(a * Math.PI / 4) * 7, here.y - 8);
     const depth = Math.floor(here.y) - (ground ?? Math.floor(here.y) - 20);
-    log(bot, `Stuck up on top of something ${depth} blocks high. Digging down.`);
+    log(bot, `Stuck up on top of something ${depth} blocks high. Getting down.`);
     await centerOnBlock(bot);
-    return await digDown(bot, depth);
+    if (await digDown(bot, depth)) return true;
+    if (bot.interrupt_code || !strandedHigh(bot)) return false;
+    return await waterfallDown(bot);
+}
+
+async function waterfallDown(bot) {
+    /* Pour water out where we stand: it spills over the edges and falls all the way down, and falling through
+       water doesn't hurt. Wait for it to reach the bottom, then step off into it. */
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const bucket = bot.inventory.items().find(i => i.name === 'water_bucket');
+    if (!bucket) {
+        log(bot, `No water bucket to get down safely with.`);
+        return false;
+    }
+    const start_y = bot.entity.position.y;
+    const feet = bot.entity.position.floored();
+    // a side where the water will pour over the edge
+    const side = [[1, 0], [-1, 0], [0, 1], [0, -1]].find(([dx, dz]) =>
+        isAirLike(bot.blockAt(feet.offset(dx, 0, dz))) && isAirLike(bot.blockAt(feet.offset(dx, -1, dz))));
+    if (!side) return false;
+    stopPathfinding(bot);
+    await bot.equip(bucket, 'hand');
+    await bot.look(bot.entity.yaw, -Math.PI / 2, true);
+    bot.activateItem();
+    await sleep(200);
+    bot.deactivateItem();
+    if (bot.blockAt(feet)?.name !== 'water') {
+        log(bot, `Couldn't pour the water out.`);
+        return false;
+    }
+    log(bot, `Poured water out to ride it down.`);
+    // flowing water falls about 4 blocks a second
+    await sleep(Math.min(12000, 1000 + (start_y - 60) * 300));
+    const target = feet.offset(side[0] + 0.5, 0, side[1] + 0.5);
+    await bot.look(Math.atan2(-(target.x - bot.entity.position.x), -(target.z - bot.entity.position.z)), 0, true);
+    bot.setControlState('forward', true);
+    await sleep(400);
+    bot.setControlState('forward', false);
+    for (let t = 0; t < 150; t++) {
+        if (bot.entity.onGround && !bot.entity.isInWater && bot.entity.position.y < start_y - 3) break;
+        await sleep(100);
+    }
+    const dropped = start_y - bot.entity.position.y;
+    log(bot, dropped > 3 ? `Got down ${Math.round(dropped)} blocks.` : `Couldn't get down the waterfall.`);
+    return dropped > 3;
 }
 
 async function healIfHurt(bot, below=12) {
