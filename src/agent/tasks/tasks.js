@@ -290,8 +290,9 @@ export class Task {
                 this.blocked_actions = [];
             }
             this.restrict_to_inventory = !!this.data.restrict_to_inventory;
+            // a task's goal has to keep going until the task ends: !stfu turns self-prompting off just like !endGoal
             if (this.data.goal)
-                this.blocked_actions.push('!endGoal');
+                this.blocked_actions.push('!endGoal', '!stfu');
             if (this.conversation)
                 this.blocked_actions.push('!endConversation');
         }
@@ -522,11 +523,49 @@ export class Task {
         await this.setAgentGoal();
     }
     
+    async moveToSurface() {
+        // a fresh run starts where the last one stopped, which can be underground, underwater, in the nether or the end.
+        // start it on the overworld surface instead, like a new world. spreadplayers never lands on water or lava,
+        // so look further out when the column straight up is sea, and fall back to the world spawn
+        const bot = this.agent.bot;
+        const dimension = (bot.game.dimension || '').replace('minecraft:', '');
+        const pos = bot.entity.position.clone();
+        if (dimension === 'overworld' && !bot.entity.isInWater && bot.blockAt(pos)?.skyLight === 15) {
+            console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
+            return;
+        }
+        const tries = [[pos, 1], [pos, 32], [pos, 128]];
+        if (bot.spawnPoint) tries.push([bot.spawnPoint, 64]);
+        for (const [center, range] of tries) {
+            const moved = new Promise((resolve) => {
+                const done = () => { clearTimeout(timer); resolve(true); };
+                const timer = setTimeout(() => { bot.removeListener('forcedMove', done); resolve(false); }, 3000);
+                bot.once('forcedMove', done);
+            });
+            bot.chat(`/execute in minecraft:overworld run spreadplayers ${Math.floor(center.x)} ${Math.floor(center.z)} 0 ${range} false ${this.name}`);
+            if (await moved) {
+                console.log(`Starting ${this.name} on the surface at ${bot.entity.position.floored()}.`);
+                return;
+            }
+        }
+        console.log(`Couldn't move ${this.name} to the surface, so it starts at ${pos.floored()}.`);
+    }
+
     async prepareWorld() {
         // bots used to be teleported to a human player and spread out here. that's gone: the /tp read the bot's
         // position before the server had moved it, so the spread started from wherever it logged out and could
         // leave it inside a wall. bots now start where they are
         let bot = this.agent.bot;
+
+        if (this.task_type === 'beat_game') {
+            await this.moveToSurface();
+            // a new world starts in the morning. starting a run empty-handed at night got the bot killed within minutes
+            bot.chat('/time set day');
+            // and with full health and hunger: they carry over from the last session, and one run started on 4 health
+            bot.chat(`/effect clear ${this.name}`);
+            bot.chat(`/effect give ${this.name} minecraft:instant_health 1 10 true`);
+            bot.chat(`/effect give ${this.name} minecraft:saturation 1 20 true`);
+        }
 
         if (this.data.agent_count && this.data.agent_count > 1) {
             // TODO wait for other bots to join

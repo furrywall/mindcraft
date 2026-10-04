@@ -39,7 +39,8 @@ const modes_list = [
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            const head_in_water = skills.isWaterBlock(blockAbove);
+            // the eyes (1.62 up) can be underwater while the block just above the feet isn't
+            const head_in_water = skills.isWaterBlock(blockAbove) || skills.isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1.62, 0)));
             if (!head_in_water) this.underwater_since = null;
             else if (!this.underwater_since) this.underwater_since = Date.now();
             // a full breath is 20 and lasts 15 seconds. come up while there's still time, whatever we're doing:
@@ -103,7 +104,13 @@ const modes_list = [
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
                 say(agent, 'I\'m dying!');
                 execute(this, agent, async () => {
-                    await skills.moveAway(bot, 20);
+                    // hide from whatever is hurting us, or run from it: a random direction can lead straight into it
+                    if (world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 16)) {
+                        if (!await skills.bunkerDown(bot))
+                            await skills.avoidEnemies(bot, 16);
+                    }
+                    else
+                        await skills.moveAway(bot, 20);
                 });
             }
             else if (bot.health <= 10 && Date.now() - bot.lastDamageTime > 4000 && Date.now() - this.last_heal > 10000 &&
@@ -205,13 +212,36 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isThreat(agent.bot, entity), 8);
+            const bot = agent.bot;
+            const enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), 8);
             // creepers and skeletons are worth engaging even without a clear walking path, they'll come to us
-            const engage = enemy && (enemy.position.distanceTo(agent.bot.entity.position) < 4 || await world.isClearPath(agent.bot, enemy));
-            if (engage) {
+            const engage = enemy && (enemy.position.distanceTo(bot.entity.position) < 4 || await world.isClearPath(bot, enemy));
+            if (!engage) return;
+            // a fight we can't win loses everything: bare hands against a zombie at night, or a crowd at low health.
+            // run instead, and come back when we've healed or have a weapon
+            const threats = world.getNearbyEntities(bot, 10).filter(entity => mc.isThreat(bot, entity)).length;
+            const items = bot.inventory.items();
+            const weapon = Math.max(1, ...items.map(item => mc.getMeleeDamage(item.name)));
+            // a creeper's blast can kill from full health without armor, and backing off once it starts to fuse is
+            // often too late. only take one on with a shield to block the blast, or a bow to shoot it from range
+            const has_shield = items.some(item => item.name === 'shield') || bot.inventory.slots[45]?.name === 'shield';
+            const has_bow = items.some(item => item.name === 'bow') && items.some(item => item.name.includes('arrow'));
+            const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
+                (enemy.name === 'creeper' && !has_shield && !has_bow);
+            if (outmatched) {
+                // hurt at night there's no outrunning them all: dig in and seal the hole instead
+                const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
+                const hide = bot.health <= 6 || (night && bot.health <= 12);
+                say(agent, `Too dangerous to fight the ${enemy.name}, ${hide ? 'hiding' : 'running'}!`);
+                execute(this, agent, async () => {
+                    if (!hide || !await skills.bunkerDown(bot))
+                        await skills.avoidEnemies(bot, 16);
+                });
+            }
+            else {
                 say(agent, `Fighting ${enemy.name}!`);
                 execute(this, agent, async () => {
-                    await skills.defendSelf(agent.bot, 8);
+                    await skills.defendSelf(bot, 8);
                 });
             }
         }
@@ -351,7 +381,9 @@ const modes_list = [
 ];
 
 async function execute(mode, agent, func, timeout=-1) {
-    if (agent.self_prompter.isActive())
+    // idle-time modes (picking up items, hunting) run while the model is thinking, and stopping the loop for them
+    // threw away the command it was about to give. only the modes that interrupt actions take over from it
+    if (mode.interrupts.includes('all') && agent.self_prompter.isActive())
         agent.self_prompter.stopLoop();
     let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;

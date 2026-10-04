@@ -53,6 +53,10 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     if (placeCost !== null) movements.placeCost = placeCost;
     // falling more than 3 blocks hurts; allow more only when we're healthy
     movements.maxDropDown = bot.health > 14 ? 4 : 3;
+    // swimming is barely more than walking by default, so paths dove through flooded caves the bot can't climb back
+    // out of and it ran out of air. make water cost a lot more than walking. not too much though: at 20 the search
+    // tried every land route before crossing a river, ran out of thinking time, and the bot stood still
+    movements.liquidCost = 8;
 
     const scaffold = new Set(movements.scafoldingBlocks);
     for (const name of SCAFFOLD_BLOCKS) {
@@ -304,102 +308,119 @@ export async function smeltItem(bot, itemName, num=1) {
     bot.modes.pause('unstuck');
     await bot.lookAt(furnaceBlock.position);
 
+    // the furnace only takes from the main inventory, but the counts include the off-hand and crafting grid,
+    // which can't be reached once the furnace window is open
+    for (const slot of EXTRA_ITEM_SLOTS) {
+        if (bot.inventory.slots[slot]?.name === itemName && bot.inventory.emptySlotCount() > 0)
+            await bot.putAway(slot).catch(() => {});
+    }
+
     console.log('smelting...');
     const furnace = await bot.openFurnace(furnaceBlock);
-    // check if the furnace is already smelting something
-    let input_item = furnace.inputItem();
-    if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
-        // TODO: check if furnace is currently burning fuel. furnace.fuel is always null, I think there is a bug.
-        // This only checks if the furnace has an input item, but it may not be smelting it and should be cleared.
-        log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
-        if (placedFurnace)
-            await collectBlock(bot, 'furnace', 1);
-        return false;
-    }
-    // check if the bot has enough items to smelt
-    let inv_counts = world.getInventoryCounts(bot);
-    if (!inv_counts[itemName] || inv_counts[itemName] < num) {
-        log(bot, `You do not have enough ${itemName} to smelt.`);
-        if (placedFurnace)
-            await collectBlock(bot, 'furnace', 1);
-        return false;
-    }
-
-    // fuel the furnace
-    if (!furnace.fuelItem()) {
-        let fuel = mc.getSmeltingFuel(bot);
-        if (!fuel) {
-            log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
+    // every way out of here, early returns and errors included, has to close the furnace: left open, later inventory
+    // actions ran against its slots and failed ("invalid operation" equipping a tool)
+    try {
+        // check if the furnace is already smelting something
+        let input_item = furnace.inputItem();
+        if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
+            // TODO: check if furnace is currently burning fuel. furnace.fuel is always null, I think there is a bug.
+            // This only checks if the furnace has an input item, but it may not be smelting it and should be cleared.
+            log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
+            bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
             if (placedFurnace)
                 await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        log(bot, `Using ${fuel.name} as fuel.`);
-
-        const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
-
-        if (fuel.count < put_fuel) {
-            log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
+        // check if the bot has enough items to smelt
+        let inv_counts = world.getInventoryCounts(bot);
+        if (!inv_counts[itemName] || inv_counts[itemName] < num) {
+            log(bot, `You do not have enough ${itemName} to smelt.`);
+            bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
             if (placedFurnace)
                 await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        await furnace.putFuel(fuel.type, null, put_fuel);
-        log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
-        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
-    }
-    // put the items in the furnace
-    await furnace.putInput(mc.getItemId(itemName), null, num);
-    // wait for the items to smelt
-    let total = 0;
-    let smelted_item = null;
-    await new Promise(resolve => setTimeout(resolve, 200));
-    let last_collected = Date.now();
-    while (total < num) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        if (furnace.outputItem()) {
-            smelted_item = await furnace.takeOutput();
-            if (smelted_item) {
-                total += smelted_item.count;
-                last_collected = Date.now();
+
+        // fuel the furnace
+        if (!furnace.fuelItem()) {
+            let fuel = mc.getSmeltingFuel(bot);
+            if (!fuel) {
+                log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
+                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                if (placedFurnace)
+                    await collectBlock(bot, 'furnace', 1);
+                return false;
+            }
+            log(bot, `Using ${fuel.name} as fuel.`);
+
+            const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
+
+            if (fuel.count < put_fuel) {
+                log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
+                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                if (placedFurnace)
+                    await collectBlock(bot, 'furnace', 1);
+                return false;
+            }
+            await furnace.putFuel(fuel.type, null, put_fuel);
+            log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
+            console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
+        }
+        // put the items in the furnace
+        await furnace.putInput(mc.getItemId(itemName), null, num);
+        // wait for the items to smelt
+        let total = 0;
+        let smelted_item = null;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        let last_collected = Date.now();
+        while (total < num) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (furnace.outputItem()) {
+                smelted_item = await furnace.takeOutput();
+                if (smelted_item) {
+                    total += smelted_item.count;
+                    last_collected = Date.now();
+                }
+            }
+            if (Date.now() - last_collected > 11000) {
+                break; // if nothing has been collected in 11 seconds, stop
+            }
+            if (bot.interrupt_code) {
+                break;
             }
         }
-        if (Date.now() - last_collected > 11000) {
-            break; // if nothing has been collected in 11 seconds, stop
+        // take all remaining in input/fuel slots
+        if (furnace.inputItem()) {
+            await furnace.takeInput();
         }
-        if (bot.interrupt_code) {
-            break;
+        if (furnace.fuelItem()) {
+            await furnace.takeFuel();
         }
-    }
-    // take all remaining in input/fuel slots
-    if (furnace.inputItem()) {
-        await furnace.takeInput();
-    }
-    if (furnace.fuelItem()) {
-        await furnace.takeFuel();
-    }
 
-    await bot.closeWindow(furnace);
+        await bot.closeWindow(furnace);
 
-    if (placedFurnace) {
-        await collectBlock(bot, 'furnace', 1);
+        if (placedFurnace) {
+            await collectBlock(bot, 'furnace', 1);
+        }
+        if (total === 0) {
+            log(bot, `Failed to smelt ${itemName}.`);
+            return false;
+        }
+        if (total < num) {
+            log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
+            return false;
+        }
+        // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
+        const output_name = mc.getItemName(smelted_item.type);
+        const expected = (inv_counts[output_name] || 0) + total;
+        if ((world.getInventoryCounts(bot)[output_name] || 0) < expected)
+            await resyncInventory(bot);
+        bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < expected;
+        log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
+        return true;
+    } finally {
+        if (bot.currentWindow === furnace) bot.closeWindow(furnace);
     }
-    if (total === 0) {
-        log(bot, `Failed to smelt ${itemName}.`);
-        return false;
-    }
-    if (total < num) {
-        log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
-        return false;
-    }
-    // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
-    const output_name = mc.getItemName(smelted_item.type);
-    const expected = (inv_counts[output_name] || 0) + total;
-    if ((world.getInventoryCounts(bot)[output_name] || 0) < expected)
-        await resyncInventory(bot);
-    bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < expected;
-    log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
-    return true;
 }
 
 export async function clearNearestFurnace(bot) {
@@ -918,6 +939,13 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         const id = mc.getBlockId(type);
         if (id != null) movements.blocksCantBreak.delete(id);
     }
+    // collectblock paths with plain pathfinder movements of its own unless given some, which swim through anything.
+    // it changes the ones it gets, so it gets its own copy
+    bot.collectBlock.movements = makeMovements(bot);
+    for (const type of blocktypes) {
+        const id = mc.getBlockId(type);
+        if (id != null) bot.collectBlock.movements.blocksCantBreak.delete(id);
+    }
 
     // Blocks to ignore safety for, usually next to lava/water
     const unsafeBlocks = ['obsidian'];
@@ -954,7 +982,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             
             return movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
-        }, 64, 1);
+        }, 64, 16);
 
         if (blocks.length === 0) {
             if (collected === 0)
@@ -963,7 +991,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 log(bot, `No more ${blockType} nearby to collect.`);
             break;
         }
-        const block = blocks[0];
+        // the nearest one is often high up a tree, and pillaring or climbing through leaves to it is slow and clumsy
+        // for the pathfinder. prefer blocks near our feet, so it takes the low logs of nearby trees first
+        const feet = bot.entity.position.y;
+        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2);
+        const block = blocks.reduce((best, b) => cost(b) < cost(best) ? b : best);
         await bot.tool.equipForBlock(block);
         if (isLiquid) {
             const bucket = bot.inventory.findInventoryItem('bucket');
@@ -1789,6 +1821,49 @@ export async function swimToAir(bot) {
     return true;
 }
 
+export async function bunkerDown(bot) {
+    /**
+     * Hide from mobs: dig two blocks straight down and seal the hole above. Use it when hurt at night with no way to
+     * win a fight. Afterwards you are underground and can mine your way onward.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if the bot is sealed in, false if it wasn't safe to dig down here.
+     * @example
+     * await skills.bunkerDown(bot);
+     **/
+    const start = bot.entity.position.floored();
+    // the two blocks we dig and the one we land on must be solid: no digging into lava, water or a cave drop
+    for (let dy = 1; dy <= 3; dy++) {
+        const block = bot.blockAt(start.offset(0, -dy, 0));
+        if (!block || block.boundingBox !== 'block' || (dy <= 2 && !block.diggable) || DANGER_BLOCKS.includes(block.name) || isWaterBlock(block)) {
+            log(bot, `Can't bunker down here: ${block?.name || 'unloaded'} ${dy} below.`);
+            return false;
+        }
+    }
+    const scaffold = getScaffoldItem(bot);
+    if (!scaffold) {
+        log(bot, `Can't bunker down without a block to seal the hole (dirt or cobblestone).`);
+        return false;
+    }
+    stopPathfinding(bot);
+    for (let dy = 1; dy <= 2; dy++) {
+        const block = bot.blockAt(start.offset(0, -dy, 0));
+        try {
+            await bot.tool.equipForBlock(block);
+            await bot.dig(block);
+        } catch (err) {
+            log(bot, `Couldn't dig down to bunker: ${err.message}.`);
+            return false;
+        }
+        // let gravity bring us down into the hole before digging the next block
+        for (let t = 0; t < 20 && bot.entity.position.y > start.y - dy + 0.1; t++)
+            await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    // seal the top: the old feet level, now two blocks above our feet
+    const sealed = await placeBlock(bot, scaffold.name, start.x, start.y, start.z, 'bottom', true);
+    if (sealed) log(bot, `Bunkered down at ${bot.entity.position.floored()}, sealed in until it's safe.`);
+    return sealed;
+}
+
 export async function digOut(bot) {
     /**
      * Break the blocks the bot is stuck inside of, e.g. after sand or gravel fell on it, so it stops suffocating.
@@ -2301,7 +2376,9 @@ export async function avoidEnemies(bot, distance=16) {
      **/
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), distance);
-    while (enemy) {
+    // a faster mob or an archer can keep up forever, and self_preservation (air, healing) is paused while we run
+    const start = Date.now();
+    while (enemy && Date.now() - start < 20000) {
         const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
         const inverted_goal = new pf.goals.GoalInvert(follow);
         bot.pathfinder.setMovements(makeMovements(bot));

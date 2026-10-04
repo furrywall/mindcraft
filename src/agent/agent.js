@@ -194,11 +194,16 @@ export class Agent {
         });
 
         // Set up auto-eat
-        this.bot.autoEat.options = {
+        // change only these: replacing the whole options object dropped eatingTimeout, so the bot stopped eating as
+        // soon as it started, and checkOnItemPickup. the default banned foods already cover raw chicken, rotten flesh
+        // and golden apples (self_preservation saves those for healing)
+        Object.assign(this.bot.autoEat.options, {
             priority: 'foodPoints',
-            startAt: 14,
-            bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
-        };
+            // health only regenerates at 18+ hunger, so starting at 14 could leave the bot hurt for a whole run
+            startAt: 18,
+            // eating from the off-hand left the food there (taking the shield's place) and out of the furnace's reach
+            offhand: false,
+        });
 
         if (save_data?.self_prompt) {
             if (init_message) {
@@ -546,7 +551,8 @@ export class Agent {
                 const p = bot.entity?.position;
                 if (!p) return;
                 const dimension = (bot.game.dimension || '').replace('minecraft:', '');
-                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} action=${this.actions.currentActionLabel || 'idle'}`);
+                const path = bot.pathfinder.isMoving() ? 'moving' : bot.pathfinder.goal ? 'planning' : 'none';
+                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path} action=${this.actions.currentActionLabel || 'idle'}`);
             }, status_secs * 1000);
         }
 
