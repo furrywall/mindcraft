@@ -96,7 +96,7 @@ index b38bd30..905aee7 100644
        bot.setControlState('jump', false)
        bot.setControlState('sprint', true)
 diff --git a/node_modules/mineflayer-pathfinder/lib/movements.js b/node_modules/mineflayer-pathfinder/lib/movements.js
-index a7e3505..84a0841 100644
+index a7e3505..9e2bd1a 100644
 --- a/node_modules/mineflayer-pathfinder/lib/movements.js
 +++ b/node_modules/mineflayer-pathfinder/lib/movements.js
 @@ -50,7 +50,12 @@ class Movements {
@@ -192,7 +192,25 @@ index a7e3505..84a0841 100644
        toPlace.push({ x: node.x + dir.x, y: node.y, z: node.z + dir.z, dx: 0, dy: 0, dz: 0, useOne: true }) // Indicate that a block should be used on this block not placed
      } else {
        cost += this.safeOrBreak(blockC, toBreak)
-@@ -554,6 +584,54 @@ class Movements {
+@@ -427,13 +457,10 @@ class Movements {
+     cost2 += this.safeOrBreak(blockC2, toBreak2)
+     if (blockD2.height - block0.height > 1.2) cost2 += this.safeOrBreak(blockD2, toBreak2)
+ 
+-    if (cost1 < cost2) {
+-      cost += cost1
+-      toBreak.push(...toBreak1)
+-    } else {
+-      cost += cost2
+-      toBreak.push(...toBreak2)
+-    }
++    // the bot's hitbox cuts across both side blocks when moving diagonally, so both have to be clear.
++    // allowing it with only one side open got the bot stuck on the corner of the other one
++    cost += cost1 + cost2
++    toBreak.push(...toBreak1, ...toBreak2)
+     if (cost > 100) return
+ 
+     cost += this.safeOrBreak(this.getBlock(node, dir.x, y, dir.z), toBreak)
+@@ -554,6 +581,54 @@ class Movements {
      neighbors.push(new Move(node.x, node.y + 1, node.z, node.remainingBlocks - toPlace.length, cost, toBreak, toPlace))
    }
  
@@ -247,7 +265,7 @@ index a7e3505..84a0841 100644
    // Jump up, down or forward over a 1 block gap
    getMoveParkourForward (node, dir, neighbors) {
      const block0 = this.getBlock(node, 0, -1, 0)
-@@ -656,8 +734,27 @@ class Movements {
+@@ -656,8 +731,27 @@ class Movements {
      this.getMoveDown(node, neighbors)
      this.getMoveUp(node, neighbors)
  

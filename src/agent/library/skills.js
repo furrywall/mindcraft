@@ -648,9 +648,9 @@ function arrowPath(pitch, horizontal_dist) {
     let h = 0, y = 0;
     for (let tick = 0; tick < 200 && h < horizontal_dist; tick++) {
         // sub-step so we don't skip over thin obstacles like a pillar edge or iron bars
-        for (let k = 0; k < 8; k++) {
-            h += vh / 8;
-            y += vy / 8;
+        for (let k = 0; k < 16; k++) {
+            h += vh / 16;
+            y += vy / 16;
             points.push({h, y});
         }
         vh *= ARROW_DRAG;
@@ -665,8 +665,9 @@ function aimPoint(entity) {
     return entity.position.offset(0, (entity.height || 1) * 0.6, 0);
 }
 
-async function fireArrowAt(bot, entity, {high=false} = {}) {
-    /* Draw the bow fully while tracking the target, then release with gravity and target movement accounted for. */
+async function fireArrowAt(bot, entity, {high=false, abort=null} = {}) {
+    /* Draw the bow fully while tracking the target, then release with gravity and target movement accounted for.
+       abort is checked while drawing; if it returns true the shot is called off. */
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const bow = bot.inventory.items().find(i => i.name === 'bow');
     if (!bow || !bot.inventory.items().some(i => i.name.includes('arrow'))) return false;
@@ -704,7 +705,7 @@ async function fireArrowAt(bot, entity, {high=false} = {}) {
     bot.activateItem();
     const draw_start = Date.now();
     while (Date.now() - draw_start < 1150) {
-        if (bot.interrupt_code || !isAlive(bot, entity)) {
+        if (bot.interrupt_code || !isAlive(bot, entity) || abort?.()) {
             bot.deactivateItem();
             return false;
         }
@@ -3107,6 +3108,7 @@ export async function enterPortal(bot, portalType='nether_portal') {
             if (bot.interrupt_code) return false;
             if (getDimension(bot) !== start_dim) {
                 await sleep(2000); // let chunks load
+                try { await bot.waitForChunksToLoad(); } catch (err) { /* go anyway */ }
                 const pos = bot.entity.position.floored();
                 log(bot, `Went through the portal, now in the ${getDimension(bot)} at ${pos.x}, ${pos.y}, ${pos.z}.`);
                 return true;
@@ -3405,6 +3407,15 @@ function getEntityHealth(entity) {
 
 // the dragon's hitbox is split into parts with their own entity ids. only the head takes full damage
 const DRAGON_HEAD = 1, DRAGON_BODY = 3;
+// what the dragon is doing, from its metadata. while sitting it can't be hurt by arrows, only by hitting it
+const DRAGON_PHASE = {HOLDING_PATTERN: 0, STRAFE_PLAYER: 1, LANDING_APPROACH: 2, LANDING: 3, TAKEOFF: 4, SITTING_FLAMING: 5,
+    SITTING_SCANNING: 6, SITTING_ATTACKING: 7, CHARGING_PLAYER: 8, DYING: 9, HOVERING: 10};
+const SITTING_PHASES = [DRAGON_PHASE.SITTING_FLAMING, DRAGON_PHASE.SITTING_SCANNING, DRAGON_PHASE.SITTING_ATTACKING];
+
+function dragonPhase(dragon) {
+    const phase = dragon?.metadata?.[16];
+    return typeof phase === 'number' && phase >= 0 && phase <= 10 ? phase : null;
+}
 
 function dragonPartPositions(dragon, flip=false, perched=false) {
     /* Estimate the centers of the head and body parts, using the same offsets the server uses.
@@ -3417,7 +3428,10 @@ function dragonPartPositions(dragon, flip=false, perched=false) {
     const p = dragon.position;
     return {
         head: p.offset(sin * 6.5, perched ? -0.5 : 0.5, -cos * 6.5),
+        neck: p.offset(sin * 5.5, perched ? 0.5 : 1.5, -cos * 5.5),
         body: p.offset(sin * 0.5, 1.5, -cos * 0.5),
+        // wing centers. even while it sits, anything near a wing gets shoved hard every tick
+        wings: [p.offset(cos * 4.5, 3, sin * 4.5), p.offset(-cos * 4.5, 3, -sin * 4.5)],
     };
 }
 
@@ -3473,21 +3487,29 @@ function crystalShotClear(info, crystal, stand, high) {
     const sol = solveArrowPitch(dist, target.y - eye.y, high);
     if (!sol) return false;
     const dir_x = (target.x - eye.x) / dist, dir_z = (target.z - eye.z) / dist;
-    const edge = info.radius + 0.5;
+    // the arrow isn't a point: keep its half width (plus a little spread) clear of the pillar and the bars
+    const margin = 0.3;
+    const edge = info.radius + 0.5 + margin;
     const bar_cells = new Set(info.bars.map(b => `${b.position.x},${b.position.y},${b.position.z}`));
+    const hitsBar = (px, py, pz) => {
+        for (const ox of [-margin, margin]) for (const oy of [-margin, margin]) for (const oz of [-margin, margin])
+            if (bar_cells.has(`${Math.floor(px + ox)},${Math.floor(py + oy)},${Math.floor(pz + oz)}`)) return true;
+        return false;
+    };
     const c = crystal.position;
     for (const {h, y} of arrowPath(sol.pitch, dist + 1.5)) {
         const px = eye.x + dir_x * h, pz = eye.z + dir_z * h, py = eye.y + y;
-        // reached the crystal's 2x2x2 hitbox
-        if (Math.abs(px - c.x) < 1 && Math.abs(pz - c.z) < 1 && py >= c.y && py <= c.y + 2) return true;
-        if (Math.hypot(px - info.center.x, pz - info.center.z) < edge && py < info.top + 0.1) return false;
-        if (bar_cells.has(`${Math.floor(px)},${Math.floor(py)},${Math.floor(pz)}`)) return false;
+        // reached the middle of the crystal's 2x2x2 hitbox
+        if (Math.abs(px - c.x) < 0.8 && Math.abs(pz - c.z) < 0.8 && py >= c.y + 0.2 && py <= c.y + 1.8) return true;
+        if (Math.hypot(px - info.center.x, pz - info.center.z) < edge && py < info.top + 0.1 + margin) return false;
+        if (bar_cells.size > 0 && hitsBar(px, py, pz)) return false;
     }
     return false;
 }
 
-function planCrystalShot(bot, crystal, info, angles=null) {
-    /* Find somewhere on the island to stand where an arrow (flat or lobbed) can reach the crystal. */
+function planCrystalShot(bot, crystal, info, angles=null, avoid=[]) {
+    /* Find somewhere on the island to stand where an arrow (flat or lobbed) can reach the crystal,
+       away from any spots in avoid (where shooting didn't work). */
     const to_center = Math.atan2(-info.center.z, -info.center.x); // pillars ring the island, aim back inward
     const base_angles = angles ?? [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05].map(a => to_center + a);
     const options = [];
@@ -3497,6 +3519,7 @@ function planCrystalShot(bot, crystal, info, angles=null) {
             const z = info.center.z + Math.sin(angle) * dist;
             const y = groundAt(bot, x, z, info.top - 2);
             if (y === null || y < 40) continue; // no island here
+            if (avoid.some(a => Math.hypot(a.x - x, a.z - z) < 8)) continue;
             for (const high of [false, true]) {
                 if (crystalShotClear(info, crystal, {x, y, z}, high)) {
                     const cost = Math.hypot(x - bot.entity.position.x, z - bot.entity.position.z) + (high ? 10 : 0);
@@ -3511,30 +3534,68 @@ function planCrystalShot(bot, crystal, info, angles=null) {
 }
 
 async function shootCrystal(bot, crystal, angles=null) {
-    const info = getPillarInfo(bot, crystal);
-    const plan = planCrystalShot(bot, crystal, info, angles);
-    if (!plan) {
-        log(bot, `Couldn't find a spot with a clear shot at the crystal at ${crystal.position.floored()}.`);
-        return false;
+    // a few arrows from one spot; if they don't get through, try from somewhere else
+    const tried = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const info = getPillarInfo(bot, crystal);
+        const plan = planCrystalShot(bot, crystal, info, angles, tried);
+        if (!plan) {
+            if (attempt === 0) log(bot, `Couldn't find a spot with a clear shot at the crystal at ${crystal.position.floored()}.`);
+            break;
+        }
+        tried.push(plan);
+        try {
+            await goToGoal(bot, new pf.goals.GoalNear(plan.x, plan.y, plan.z, 1.5));
+        } catch (err) { /* try from wherever we got to */ }
+        if (bot.interrupt_code || !isAlive(bot, crystal)) break;
+        // re-check the arc from where we actually ended up
+        const here = bot.entity.position;
+        const high = crystalShotClear(info, crystal, here, false) ? false : plan.high;
+        if (await shootEntity(bot, crystal, 3, high)) return true;
     }
-    try {
-        await goToGoal(bot, new pf.goals.GoalNear(plan.x, plan.y, plan.z, 1.5));
-    } catch (err) { /* try from wherever we got to */ }
-    if (bot.interrupt_code || !isAlive(bot, crystal)) return !isAlive(bot, crystal);
-    // re-check the arc from where we actually ended up
-    const here = bot.entity.position;
-    const high = crystalShotClear(info, crystal, here, false) ? false : plan.high;
-    return await shootEntity(bot, crystal, 6, high);
+    return !isAlive(bot, crystal);
+}
+
+async function guardRails(bot) {
+    /* Put blocks around our feet on top of a 1x1 tower, so knockback (the dragon's wings push hard) can't
+       throw us off. Each one goes on a support block placed against the side of the tower. */
+    const feet = bot.entity.position.floored();
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        if (bot.interrupt_code) return;
+        const side = bot.blockAt(feet.offset(dx, 0, dz));
+        if (!side || side.boundingBox === 'block') continue;
+        const scaffold = getScaffoldItem(bot);
+        if (!scaffold) return;
+        try {
+            await bot.equip(scaffold, 'hand');
+            if (bot.blockAt(feet.offset(dx, -1, dz))?.boundingBox !== 'block')
+                await bot.placeBlock(bot.blockAt(feet.offset(0, -1, 0)), new Vec3(dx, 0, dz));
+            await bot.placeBlock(bot.blockAt(feet.offset(dx, -1, dz)), new Vec3(0, 1, 0));
+        } catch (err) { /* do the other sides anyway */ }
+    }
 }
 
 async function openCrystalCage(bot, crystal) {
-    /* Tower up beside the pillar, break the iron bars facing us, then dig back down.
-       Returns the direction (angle) of the opening so we can shoot through it from the ground. */
+    /* Tower up beside the pillar, break a window in the iron bars facing the island, then dig back down.
+       Returns the direction (angle) of the opening so we can shoot through it from the ground.
+       Up there the dragon can knock us off, and the fall is deadly, so only go up healthy, eat a golden apple
+       first for the extra hearts, break as few bars as will do, and come back down early if we get hurt. */
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const info = getPillarInfo(bot, crystal);
     if (info.bars.length === 0) return null;
     if (!getScaffoldItem(bot)) {
         log(bot, `Need blocks (cobblestone, end_stone...) to tower up to the caged crystal.`);
         return null;
+    }
+    if (bot.health < 16) {
+        // top up and let health regenerate before going up
+        const food = bot.inventory.items().find(i => ['cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'bread', 'baked_potato', 'cooked_chicken', 'golden_carrot'].includes(i.name));
+        if (food && bot.food < 20) await consume(bot, food.name);
+        for (let t = 0; t < 30 && bot.health < 16 && !bot.interrupt_code; t++) await sleep(500);
+        if (bot.health < 14) {
+            log(bot, `Too hurt (${Math.round(bot.health)}/20) to tower up to the caged crystal.`);
+            return null;
+        }
     }
     const angle = Math.atan2(-info.center.z, -info.center.x); // the island side of the pillar
     const bx = info.center.x + Math.cos(angle) * (info.radius + 1.2);
@@ -3547,17 +3608,51 @@ async function openCrystalCage(bot, crystal) {
     log(bot, `Crystal at ${crystal.position.floored()} is caged. Towering up to break the bars.`);
     const reached = await goToPosition(bot, Math.floor(bx) + 0.5, by, Math.floor(bz) + 0.5, 0.5);
     if (!reached || bot.interrupt_code) return null;
+    // the climb takes a while, and the dragon flying past is what knocks you off. go when it's away
+    const dragonAway = () => {
+        const dragon = Object.values(bot.entities).find(e => e.name === 'ender_dragon');
+        if (!dragon) return true;
+        const phase = dragonPhase(dragon);
+        if (phase !== null && (SITTING_PHASES.includes(phase) || phase === DRAGON_PHASE.LANDING)) return true;
+        return Math.hypot(dragon.position.x - info.center.x, dragon.position.z - info.center.z) > 60;
+    };
+    for (let t = 0; t < 90 && !dragonAway(); t++) {
+        if (bot.interrupt_code) return null;
+        await sleep(500);
+    }
+    if (!dragonAway()) {
+        log(bot, `The dragon keeps flying around that pillar, too dangerous to climb it right now.`);
+        return null;
+    }
+    const apple = bot.inventory.items().find(i => i.name === 'enchanted_golden_apple' || i.name === 'golden_apple');
+    if (apple) await consume(bot, apple.name);
     const start_y = Math.floor(bot.entity.position.y);
     // feet level with the crystal's base puts our eyes level with the bars
-    if (!(await pillarUp(bot, info.top + 1 - start_y))) return null;
+    if (!(await pillarUp(bot, info.top + 1 - start_y))) {
+        await digDown(bot, Math.floor(bot.entity.position.y) - start_y);
+        return null;
+    }
+    await guardRails(bot);
 
+    // the bars on the side facing us, level with the crystal; the middle ones first, that's where we shoot through
+    const dir = {x: Math.cos(angle), z: Math.sin(angle)};
+    const facing = (b) => {
+        const dx = b.position.x + 0.5 - info.center.x, dz = b.position.z + 0.5 - info.center.z;
+        return {depth: dx * dir.x + dz * dir.z, side: Math.abs(-dx * dir.z + dz * dir.x)};
+    };
     const eye = () => bot.entity.position.offset(0, 1.62, 0);
-    const reachable = getPillarInfo(bot, crystal).bars
+    // shots from the ground come up steeply, so clear the whole face, bottom rows included. the rails keep us up here
+    const near_face = getPillarInfo(bot, crystal).bars
+        .filter(b => facing(b).depth > 1.2 && b.position.y >= info.top && b.position.y <= info.top + 2)
         .filter(b => eye().distanceTo(b.position.offset(0.5, 0.5, 0.5)) < 4.5)
-        .sort((a, b) => eye().distanceTo(a.position) - eye().distanceTo(b.position));
+        .sort((a, b) => facing(a).side - facing(b).side || a.position.y - b.position.y);
     let broken = 0;
-    for (const bar of reachable) {
-        if (bot.interrupt_code) return null;
+    for (const bar of near_face) {
+        if (bot.interrupt_code) break;
+        if (bot.health < 10) {
+            log(bot, `Getting hurt up here, climbing down.`);
+            break;
+        }
         if (bot.blockAt(bar.position)?.name !== 'iron_bars') continue;
         if (await breakBlockAt(bot, bar.position.x, bar.position.y, bar.position.z)) broken++;
     }
@@ -3586,6 +3681,8 @@ export async function fightEnderDragon(bot) {
     bot.modes.pause('unstuck');
     // never look an enderman in the eyes while we're busy
     bot.modes.pause('idle_staring');
+    // right after arriving the island may still be loading, and the bot freezes in unloaded chunks
+    try { await bot.waitForChunksToLoad(); } catch (err) { /* go anyway */ }
 
     // 1. get onto the main island. we may spawn on the obsidian platform out over the void
     const to_center = Math.hypot(bot.entity.position.x, bot.entity.position.z);
@@ -3602,9 +3699,13 @@ export async function fightEnderDragon(bot) {
     const cage_opened = new Map(); // crystal id -> angle of the gap we made
     for (let round = 0; round < 30; round++) {
         if (bot.interrupt_code) return false;
+        // open crystals first, they're quick and safe. caged ones mean towering up next to the pillar
+        const caged = e => getPillarInfo(bot, e).bars.length > 0 && !cage_opened.has(e.id);
         const crystals = Object.values(bot.entities)
             .filter(e => e.name === 'end_crystal' && !given_up.has(e.id) && Math.hypot(e.position.x, e.position.z) < 80)
-            .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
+            .map(e => ({e, caged: caged(e), dist: e.position.distanceTo(bot.entity.position)}))
+            .sort((a, b) => (a.caged - b.caged) || (a.dist - b.dist))
+            .map(c => c.e);
         if (crystals.length === 0) break;
         if (!hasBowAndArrows(bot)) {
             log(bot, `Need a bow and arrows to destroy the end crystals.`);
@@ -3637,16 +3738,34 @@ export async function fightEnderDragon(bot) {
     if (given_up.size > 0)
         log(bot, `${given_up.size} crystals are still up. The dragon can still be killed but will heal near them.`);
 
-    // 3. fight the dragon
+    // 3. fight the dragon. what to do depends on its phase: shoot it while it flies, and hit its head while it's
+    // perched (arrows do nothing then), staying out of its breath, which lingers on the ground as clouds
     const start = Date.now();
     let last_attack = 0;
     let last_shot = 0;
     let flip_yaw = false;
     let missed_head_hits = 0;
     let last_seen = Date.now();
-    let last_approach = 0;
+    let last_move = 0;
     let last_health = null;
     let last_status = 0;
+    let last_heal = 0;
+    let goal_key = null;
+    const moveTo = (x, z, range, y=null) => {
+        // only re-plan when the target actually changes, or every few seconds
+        const key = `${Math.round(x)},${Math.round(z)},${range}`;
+        if (key === goal_key && Date.now() - last_move < 3000) return;
+        goal_key = key;
+        last_move = Date.now();
+        const movements = makeMovements(bot, {destructive: false});
+        movements.allow1by1towers = false; // never tower up near the dragon
+        bot.pathfinder.setMovements(movements);
+        bot.pathfinder.setGoal(y !== null ? new pf.goals.GoalNear(x, y, z, range) : new pf.goals.GoalNearXZ(x, z, range));
+    };
+    const breathClouds = () => Object.values(bot.entities)
+        .filter(e => e.name === 'area_effect_cloud' && e.position.distanceTo(bot.entity.position) < 24)
+        .map(e => ({x: e.position.x, z: e.position.z, r: (typeof e.metadata?.[8] === 'number' ? e.metadata[8] : 3) + 1.2}));
+    const inBreath = (x, z, clouds) => clouds.some(c => Math.hypot(x - c.x, z - c.z) < c.r);
     while (Date.now() - start < 15 * 60 * 1000) {
         if (bot.interrupt_code) return false;
         const dragon = Object.values(bot.entities).find(e => e.name === 'ender_dragon');
@@ -3661,19 +3780,78 @@ export async function fightEnderDragon(bot) {
                 log(bot, `Can't find the ender dragon anywhere.`);
                 return false;
             }
-            if (Math.hypot(bot.entity.position.x, bot.entity.position.z) > 30) {
-                try { await goToGoal(bot, new pf.goals.GoalNearXZ(8, 8, 3)); } catch (err) { /* keep looking */ }
-            }
+            if (Math.hypot(bot.entity.position.x, bot.entity.position.z) > 30) moveTo(8, 8, 3);
             continue;
         }
         last_seen = Date.now();
-
-        // dodge dragon's breath
-        const breath = world.getNearestEntityWhere(bot, e => e.name === 'area_effect_cloud', 5);
-        if (breath) {
-            bot.pathfinder.setMovements(makeMovements(bot, {destructive: false}));
-            bot.pathfinder.setGoal(new pf.goals.GoalInvert(new pf.goals.GoalFollow(breath, 7)), true);
+        const phase = dragonPhase(dragon);
+        if (phase === DRAGON_PHASE.DYING) {
+            stopPathfinding(bot);
             await sleep(500);
+            continue;
+        }
+
+        // heal up between hits, before it gets dangerous
+        if (bot.health < 12 && Date.now() - last_heal > 5000) {
+            const food = bot.inventory.items().find(i => i.name === 'enchanted_golden_apple' || i.name === 'golden_apple') ||
+                (bot.food < 20 ? bot.inventory.items().find(i => ['cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'bread', 'baked_potato', 'golden_carrot', 'cooked_chicken'].includes(i.name)) : null);
+            if (food) {
+                last_heal = Date.now();
+                await consume(bot, food.name);
+                continue;
+            }
+        }
+
+        // sidestep its fireballs: move across their line of flight, away from where they'll burst
+        const here = bot.entity.position;
+        const fireball = Object.values(bot.entities).find(e => e.name === 'dragon_fireball' && e.position.distanceTo(here) < 20);
+        if (fireball) {
+            const fx = here.x - fireball.position.x, fz = here.z - fireball.position.z;
+            const fd = Math.hypot(fx, fz) || 1;
+            const cands = [1, -1].map(side => ({x: here.x - fz / fd * 7 * side, z: here.z + fx / fd * 7 * side}))
+                .filter(p => !inBreath(p.x, p.z, breathClouds()));
+            if (cands.length > 0) {
+                goal_key = null;
+                moveTo(cands[0].x, cands[0].z, 1.5);
+            }
+            await sleep(150);
+            continue;
+        }
+
+        // get out of the dragon's breath, straight away from the middle of the cloud
+        const clouds = breathClouds();
+        const cloud = clouds.find(c => Math.hypot(here.x - c.x, here.z - c.z) < c.r);
+        if (cloud) {
+            const d = Math.hypot(here.x - cloud.x, here.z - cloud.z) || 1;
+            const ex = cloud.x + (here.x - cloud.x) / d * (cloud.r + 1.5), ez = cloud.z + (here.z - cloud.z) / d * (cloud.r + 1.5);
+            goal_key = null;
+            moveTo(ex, ez, 1);
+            await sleep(250);
+            continue;
+        }
+
+        // a spot this far from the dragon (or the portal) on solid ground, out of the breath, the closest one to us
+        const clearSpot = (cx, cz, radius) => {
+            let best = null;
+            for (let a = 0; a < 16; a++) {
+                const x = cx + Math.cos(a * Math.PI / 8) * radius, z = cz + Math.sin(a * Math.PI / 8) * radius;
+                if (inBreath(x, z, clouds)) continue;
+                const y = groundAt(bot, x, z, 80);
+                if (y === null || y < 50) continue;
+                const d = Math.hypot(x - here.x, z - here.z);
+                if (!best || d < best.d) best = {x, y, z, d};
+            }
+            return best;
+        };
+        // taking off, landing, or breathing fire: its wings throw you ~40 blocks and its head and neck hit hard.
+        // only go near it while it sits scanning or roaring
+        const dragon_d = Math.hypot(here.x - dragon.position.x, here.z - dragon.position.z);
+        const keep_clear = phase === DRAGON_PHASE.TAKEOFF || phase === DRAGON_PHASE.LANDING || phase === DRAGON_PHASE.SITTING_FLAMING ||
+            (phase !== null && !SITTING_PHASES.includes(phase) && dragon.position.y < here.y + 10);
+        if (keep_clear && dragon_d < 13) {
+            const spot = clearSpot(dragon.position.x, dragon.position.z, 15);
+            if (spot) moveTo(spot.x, spot.z, 1.5, spot.y);
+            await sleep(150);
             continue;
         }
 
@@ -3683,32 +3861,55 @@ export async function fightEnderDragon(bot) {
             last_status = Date.now();
         }
         const d_center = Math.hypot(dragon.position.x, dragon.position.z);
-        const perched = d_center < 10 && dragon.position.y < portal_y + 8;
+        // phases are in the dragon's metadata on modern versions; fall back to where it is
+        const perched = phase !== null ? SITTING_PHASES.includes(phase) : (d_center < 10 && dragon.position.y < portal_y + 8);
+        const landing = phase === DRAGON_PHASE.LANDING || phase === DRAGON_PHASE.LANDING_APPROACH;
         const dist = bot.entity.position.distanceTo(dragon.position);
 
         if (perched) {
-            // go stand on the ground under its head (the only part that takes full damage) and hit it.
-            // never tower up to it: anything within a block of the head takes 10 damage
+            // stand a few blocks to the side of its head (the only part that takes full damage) and hit it from
+            // there. the head and neck hurt anything within a block of them, and the head hangs at about standing
+            // height, so never stand right under it. stay out of the breath too
             const parts = dragonPartPositions(dragon, flip_yaw, true);
             const eye = bot.entity.position.offset(0, 1.62, 0);
             const head_dist = eye.distanceTo(parts.head);
-            if (head_dist > 3.5 && Date.now() - last_approach > 1000) {
-                const movements = makeMovements(bot, {destructive: false});
-                movements.allow1by1towers = false;
-                movements.scafoldingBlocks = [];
-                bot.pathfinder.setMovements(movements);
-                let stand_y = groundAt(bot, parts.head.x, parts.head.z, parts.head.y - 2);
-                // standing there would put us inside the head's damage zone (1 block around it): hang back
-                const too_close = stand_y !== null && stand_y + 1.8 > parts.head.y - 1.5;
-                if (!too_close) {
-                    bot.pathfinder.setGoal(stand_y !== null
-                        ? new pf.goals.GoalNear(parts.head.x, stand_y, parts.head.z, 1)
-                        : new pf.goals.GoalNearXZ(parts.head.x, parts.head.z, 1));
-                }
-                last_approach = Date.now();
+            // the head and neck hurt anything within a block of them; the wings shove anything within 4 blocks of
+            // them (these are the server's boxes, grown by that much plus a bit of our own width)
+            const dragon_y = dragon.position.y;
+            const hurtZones = [
+                {c: parts.head, half: 0.5 + 1 + 0.4, y0: parts.head.y - 1.5, y1: parts.head.y + 1.5},
+                {c: parts.neck, half: 1.5 + 1 + 0.4, y0: parts.neck.y - 2.5, y1: parts.neck.y + 2.5},
+                ...parts.wings.map(w => ({c: w, half: 2 + 4 + 0.4, y0: dragon_y - 2, y1: dragon_y + 4})),
+            ];
+            const inHurtZone = (x, z, y) => hurtZones.some(h => Math.abs(x - h.c.x) < h.half && Math.abs(z - h.c.z) < h.half &&
+                y < h.y1 && y + 1.8 > h.y0);
+            if (inHurtZone(here.x, here.z, here.y)) {
+                // too close: get well clear of it
+                const spot = clearSpot(dragon.position.x, dragon.position.z, 15);
+                if (spot) moveTo(spot.x, spot.z, 1.5, spot.y);
+                await sleep(150);
+                continue;
             }
-            else if (head_dist <= 3.5) {
-                bot.pathfinder.setGoal(null);
+            if (head_dist > 4.5) {
+                // right under the head if it's high enough, otherwise on rings around it; must stay in reach of it
+                const spots = [];
+                for (const radius of [0, 1.5, 2.5, 3.3]) {
+                    for (let a = 0; a < (radius === 0 ? 1 : 16); a++) {
+                        const angle = a * Math.PI / 8;
+                        const x = parts.head.x + Math.cos(angle) * radius, z = parts.head.z + Math.sin(angle) * radius;
+                        if (inBreath(x, z, clouds)) continue;
+                        const y = groundAt(bot, x, z, parts.head.y + 2);
+                        if (y === null || inHurtZone(x, z, y)) continue;
+                        if (new Vec3(x, y + 1.62, z).distanceTo(parts.head) > 4.8) continue;
+                        spots.push({x, y, z, d: Math.hypot(x - bot.entity.position.x, z - bot.entity.position.z) + radius});
+                    }
+                }
+                spots.sort((a, b) => a.d - b.d);
+                if (spots.length > 0) moveTo(spots[0].x, spots[0].z, 0.8, spots[0].y);
+            }
+            else {
+                stopPathfinding(bot);
+                goal_key = null;
             }
             await equipHighestAttack(bot);
             const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
@@ -3735,16 +3936,23 @@ export async function fightEnderDragon(bot) {
             }
         }
         else {
-            // it's flying: shoot it if we can, otherwise wait near (not on) the fountain for it to land
-            bot.pathfinder.setGoal(null);
-            if (hasBowAndArrows(bot) && dist < 70 && Date.now() - last_shot > 1500) {
-                await fireArrowAt(bot, dragon);
-                last_shot = Date.now();
+            // flying: shoot it if we can, and wait near the portal for it to perch. 14 blocks out is close enough
+            // to get to its head quickly, but clear of its wings when it lands
+            const from_portal = Math.hypot(here.x, here.z);
+            if (from_portal < 12 || from_portal > 18) {
+                const wait = clearSpot(0, 0, 14);
+                if (wait) moveTo(wait.x, wait.z, 2, wait.y);
             }
-            else if (Math.hypot(bot.entity.position.x, bot.entity.position.z) > 14) {
-                try {
-                    await goToGoal(bot, new pf.goals.GoalNearXZ(8, 8, 3));
-                } catch (err) { /* keep fighting */ }
+            if (hasBowAndArrows(bot) && dist < 70 && Date.now() - last_shot > 1500 && (!landing || dist > 12)) {
+                stopPathfinding(bot);
+                goal_key = null;
+                // give up the shot if a fireball comes at us or breath reaches us while drawing
+                await fireArrowAt(bot, dragon, {abort: () => {
+                    const p = bot.entity.position;
+                    return inBreath(p.x, p.z, breathClouds()) ||
+                        Object.values(bot.entities).some(e => e.name === 'dragon_fireball' && e.position.distanceTo(p) < 20);
+                }});
+                last_shot = Date.now();
             }
         }
         await sleep(100);
