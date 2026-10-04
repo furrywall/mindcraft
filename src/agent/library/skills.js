@@ -2930,12 +2930,20 @@ export async function digStairsDown(bot, distance = 10) {
             log(bot, `Dug ${i} steps down, but every way down from here runs into water, lava or a drop.`);
             return i > 0;
         }
-        for (const dy of [1, 0, -1]) {
-            const b = bot.blockAt(pos.offset(dir[0], dy, dir[1]));
-            if (b.boundingBox === 'block' && !await breakBlockAt(bot, b.position.x, b.position.y, b.position.z)) {
-                log(bot, `Failed to dig the staircase at ${b.position}.`);
-                return false;
+        // gravel and sand above fall into the gap as soon as it opens, so clear the step again until it stays clear
+        for (let round = 0; round < 8; round++) {
+            let dug = false;
+            for (const dy of [1, 0, -1]) {
+                const b = bot.blockAt(pos.offset(dir[0], dy, dir[1]));
+                if (b.boundingBox !== 'block') continue;
+                if (!await breakBlockAt(bot, b.position.x, b.position.y, b.position.z)) {
+                    log(bot, `Failed to dig the staircase at ${b.position}.`);
+                    return false;
+                }
+                dug = true;
             }
+            if (!dug) break;
+            await new Promise(resolve => setTimeout(resolve, 400));
         }
         // walk down into the step
         const target = pos.offset(dir[0] + 0.5, -1, dir[1] + 0.5);
