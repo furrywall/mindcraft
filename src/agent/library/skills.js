@@ -636,7 +636,18 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 await sleep(100);
                 continue;
             }
-            lowerShield();
+            // block with the shield whenever we aren't swinging: between swings up close (blocks melee hits), and while
+            // walking up to an archer (blocks arrows). it comes down for each swing
+            const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
+            const swing_ready = dist <= reach && now - last_attack >= cooldown;
+            const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(entity.name);
+            if (has_shield && !swing_ready && (dist < 4 || (archer && dist < 16))) {
+                if (!shielding) bot.activateItem(true);
+                shielding = true;
+            }
+            else {
+                lowerShield();
+            }
 
             if (dist < best_dist - 0.5) {
                 best_dist = dist;
@@ -648,8 +659,7 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
             }
 
             setMode('chase');
-            const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
-            if (dist <= reach && now - last_attack >= cooldown) {
+            if (swing_ready) {
                 // critical hit: attack while falling after a jump. skip it in water/when the target is right on top of us
                 const can_crit = bot.entity.onGround && !bot.entity.isInWater && !bot.entity.isInLava && dist > 1.5 && entity.name !== 'creeper';
                 if (can_crit) {

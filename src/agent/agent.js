@@ -603,6 +603,18 @@ export class Agent {
         await this.bot.modes.update();
         this.self_prompter.update(delta);
         await this.checkTaskDone();
+        this.keepShieldInOffhand(delta);
+    }
+
+    keepShieldInOffhand(delta) {
+        // a shield only blocks from the off-hand. check every 5s, between actions (while the model is thinking) and with
+        // no window open, so equipping doesn't get in the way of anything
+        this.shield_check = (this.shield_check || 0) + delta;
+        if (this.shield_check < 5000 || !this.isIdle() || this.bot.currentWindow) return;
+        this.shield_check = 0;
+        if (this.bot.inventory.slots[45]?.name === 'shield') return;
+        const shield = this.bot.inventory.items().find(item => item.name === 'shield');
+        if (shield) this.bot.equip(shield, 'off-hand').catch(() => {});
     }
 
     isIdle() {

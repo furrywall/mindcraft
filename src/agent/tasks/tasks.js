@@ -421,6 +421,10 @@ export class Task {
     }
 
     async setUpTask() {
+        // make it day first thing: the rest of the setup takes a few seconds, and a bot that logged in at night where
+        // the last run ended was shot by a skeleton before it was done
+        if (this.task_type === 'beat_game')
+            this.agent.bot.chat('/time set day');
         await this.agent.bot.chat(`/clear ${this.name}`);
         console.log(`Cleared ${this.name}'s inventory.`);
 
