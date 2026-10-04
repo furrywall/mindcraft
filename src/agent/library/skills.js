@@ -4255,7 +4255,8 @@ function dragonFighter(bot, portal_y) {
                 await getDownSafely(bot);
             }
             else if (!SITTING_PHASES.includes(phase) && hasBowAndArrows(bot) && Date.now() - last_shot > 1500 &&
-                    bot.entity.position.distanceTo(dragon.position) < 70) {
+                    bot.entity.position.distanceTo(dragon.position) < 70 &&
+                    !Object.values(bot.entities).some(e => e.name === 'end_crystal' && Math.hypot(e.position.x, e.position.z) < 80)) {
                 await fireArrowAt(bot, dragon, {abort: () => { const h = dragonHazards(bot); return !!(h.incoming || h.inCloud); }});
                 last_shot = Date.now();
             }
@@ -4401,7 +4402,10 @@ function dragonFighter(bot, portal_y) {
                 const wait = clearSpot(0, 0, wait_at);
                 if (wait) moveTo(wait.x, wait.z, 1.5, wait.y);
             }
-            if (hasBowAndArrows(bot) && dist < 70 && Date.now() - last_shot > 1500 && (!landing || dist > 12) &&
+            // most arrows at it in flight miss, and while a crystal is up it heals them off anyway: keep the arrows
+            // for the crystals then
+            const crystals_up = Object.values(bot.entities).some(e => e.name === 'end_crystal' && Math.hypot(e.position.x, e.position.z) < 80);
+            if (hasBowAndArrows(bot) && !crystals_up && dist < 70 && Date.now() - last_shot > 1500 && (!landing || dist > 12) &&
                 (!landing || from_portal < far)) {
                 stopPathfinding(bot);
                 goal_key = null;
