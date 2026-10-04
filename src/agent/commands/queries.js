@@ -418,11 +418,11 @@ function getGameProgress(bot) {
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
     const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
-    if (dimension === 'overworld' && night && on_surface && !steps[1].done) {
-        // an early-game bot on the surface at night keeps dying to zombies, skeletons and creepers. underground it's
-        // safe, and mining iron down there is the next step anyway
+    if (dimension === 'overworld' && night && on_surface && !steps[2].done) {
+        // a bot without armor on the surface at night keeps dying to zombies, skeletons and creepers (night falls about
+        // 10 minutes into a fresh run). underground it's safe, and the iron and diamonds it needs next are down there
         survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
-            'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore, coal_ore) until morning.';
+            'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore for armor, coal_ore, diamonds deeper) until morning.';
     }
     else if (dimension === 'overworld' && steps[0].done) {
         if (food < 4 && raw_meat.length > 0)

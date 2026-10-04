@@ -226,8 +226,10 @@ const modes_list = [
             // often too late. only take one on with a shield to block the blast, or a bow to shoot it from range
             const has_shield = items.some(item => item.name === 'shield') || bot.inventory.slots[45]?.name === 'shield';
             const has_bow = items.some(item => item.name === 'bow') && items.some(item => item.name.includes('arrow'));
+            // archers keep hitting from range while we close in, and nothing blocks their arrows without a shield
+            const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(enemy.name);
             const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
-                (enemy.name === 'creeper' && !has_shield && !has_bow);
+                (enemy.name === 'creeper' && !has_shield && !has_bow) || (archer && !has_shield && bot.health < 14);
             if (outmatched) {
                 // hurt at night there's no outrunning them all: dig in and seal the hole instead
                 const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
