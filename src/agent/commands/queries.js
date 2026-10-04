@@ -386,6 +386,9 @@ function getGameProgress(bot) {
         : 'flint_and_steel (1 iron_ingot and 1 flint: !collectBlocks("gravel", 8) until flint drops)');
     if (blocks < 36) portal_kit.push(`${36 - blocks} more cobblestone`);
     const portal_near = dimension === 'overworld' && !!world.getNearestBlock(bot, 'nether_portal', 24);
+    // a portal already built here stands in for the kit, but only with the gear: later steps tick off the earlier ones,
+    // and a bot that started a run next to an old portal walked into the nether empty-handed
+    const geared = any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1;
 
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
@@ -415,7 +418,7 @@ function getGameProgress(bot) {
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
         // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
-        {done: portal_kit.length === 0 || portal_near || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone)',
+        {done: portal_kit.length === 0 || (portal_near && geared) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone)',
             next: `To cast a nether portal without diamonds you still need: ${portal_kit.join('; ')}. Get it all in one trip.`},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'
