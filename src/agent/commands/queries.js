@@ -385,9 +385,10 @@ function getGameProgress(bot) {
                 ? 'You have iron_ingot: craft the iron_pickaxe now.'
                 : count('raw_iron') + count('iron_ingot') >= 3
                 ? `Smelt all your raw_iron at once with !smeltItem("raw_iron", ${count('raw_iron')}), then craft the iron_pickaxe.`
-                : 'Mine iron in one trip (dig down to y=16 or explore caves): about 25 iron_ore covers the iron_pickaxe (3), shield (1), iron_sword (2), bucket (3), chestplate (8) and leggings (7). Grab any coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe.'},
-        {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 2, text: 'Sword, shield and some armor',
-            next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights), then an iron_sword, iron_chestplate and iron_leggings. If you are short of iron, mine all you still need in one trip.'},
+                : 'Mine iron (dig down to y=16 or explore caves): about 12 iron_ore covers the iron_pickaxe (3), bucket (3), shield (1), iron_sword (2) and flint_and_steel (1). Grab any coal you pass for fuel, then smelt all the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
+        // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
+        {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
+            next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
         {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',
             next: 'Craft a bow (3 sticks, 3 string from spiders) and arrows (flint, stick, feather from chickens).'},
         {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
