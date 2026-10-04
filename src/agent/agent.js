@@ -551,7 +551,8 @@ export class Agent {
                 const p = bot.entity?.position;
                 if (!p) return;
                 const dimension = (bot.game.dimension || '').replace('minecraft:', '');
-                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} action=${this.actions.currentActionLabel || 'idle'}`);
+                const path = bot.pathfinder.isMoving() ? 'moving' : bot.pathfinder.goal ? 'planning' : 'none';
+                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path} action=${this.actions.currentActionLabel || 'idle'}`);
             }, status_secs * 1000);
         }
 

@@ -218,8 +218,14 @@ const modes_list = [
             // a fight we can't win loses everything: bare hands against a zombie at night, or a crowd at low health.
             // run instead, and come back when we've healed or have a weapon
             const threats = world.getNearbyEntities(bot, 10).filter(entity => mc.isThreat(bot, entity)).length;
-            const weapon = Math.max(1, ...bot.inventory.items().map(item => mc.getMeleeDamage(item.name)));
-            const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2));
+            const items = bot.inventory.items();
+            const weapon = Math.max(1, ...items.map(item => mc.getMeleeDamage(item.name)));
+            // a creeper's blast can kill from full health without armor, and backing off once it starts to fuse is
+            // often too late. only take one on with a shield to block the blast, or a bow to shoot it from range
+            const has_shield = items.some(item => item.name === 'shield') || bot.inventory.slots[45]?.name === 'shield';
+            const has_bow = items.some(item => item.name === 'bow') && items.some(item => item.name.includes('arrow'));
+            const outmatched = bot.health <= 6 || threats >= 4 || (weapon < 4 && (bot.health < 14 || threats >= 2)) ||
+                (enemy.name === 'creeper' && !has_shield && !has_bow);
             if (outmatched) {
                 say(agent, `Too dangerous to fight the ${enemy.name}, running!`);
                 execute(this, agent, async () => {
