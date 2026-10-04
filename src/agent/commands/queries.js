@@ -402,12 +402,12 @@ function getGameProgress(bot) {
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
-        {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',
-            next: 'Craft a bow (3 sticks, 3 string from spiders) and arrows (flint, stick, feather from chickens).'},
         {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
-            next: 'Find diamond_ore around y=-58 with an iron_pickaxe, craft a diamond_pickaxe.'},
+            next: '!collectBlocks("diamond_ore", 3) to mine the nearest diamonds (deepslate ones count too): it digs its way there. ' +
+                (bot.entity.position.y > -40 ? `Only if it finds none, dig down toward y=-58 with !digDown(${Math.round(bot.entity.position.y + 58)}) and try again. ` : '') +
+                'Then !craftRecipe("diamond_pickaxe", 1).'},
         {done: (has('obsidian', 10) && any('flint_and_steel', 'fire_charge')) || dimension !== 'overworld' || eyes >= 12, text: '10 obsidian and flint_and_steel',
-            next: 'Find a lava pool and use !makeObsidian(10) (needs a water_bucket and diamond_pickaxe). Craft flint_and_steel from iron_ingot and flint (from gravel).'},
+            next: 'Lava pools are common deep down, near diamond level: !makeObsidian(10) there (needs a water_bucket and the diamond_pickaxe). Craft flint_and_steel from iron_ingot and flint (from gravel) if you have none.'},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'
                 ? 'Use !collectBlazeRods(7). It finds a fortress and kills blazes; bring armor, food, and a bow if you have one.'
@@ -416,6 +416,9 @@ function getGameProgress(bot) {
             next: 'Use !collectEnderPearls(12). Endermen are common at night in the overworld and in warped forests in the nether.'},
         {done: eyes >= 12, text: '12 eyes of ender',
             next: 'Craft blaze_powder from blaze_rod, then craft ender_eye from ender_pearl and blaze_powder until you have 12.'},
+        // only the dragon fight needs a bow (to shoot the end crystals), so get it last instead of holding the run up early
+        {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',
+            next: 'For the dragon fight: craft a bow (3 sticks, 3 string from spiders) and 16+ arrows (flint, stick, feather from chickens), or take them from skeletons you kill.'},
         {done: dimension === 'the_end', text: 'Find the stronghold and open the end portal',
             next: dimension === 'the_nether'
                 ? 'Go back to the overworld through your portal (!enterPortal nether_portal).'
