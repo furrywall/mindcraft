@@ -566,6 +566,9 @@ export class Task {
             await this.moveToSurface();
             // a new world starts in the morning. starting a run empty-handed at night got the bot killed within minutes
             bot.chat('/time set day');
+            // and clear: in rain, zombies and skeletons don't burn in daylight, and a run started in a storm died to
+            // them twice before it had a sword
+            bot.chat('/weather clear');
             // and with full health and hunger: they carry over from the last session, and one run started on 4 health
             bot.chat(`/effect clear ${this.name}`);
             bot.chat(`/effect give ${this.name} minecraft:instant_health 1 10 true`);

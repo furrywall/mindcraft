@@ -679,18 +679,25 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
                 }
             }
 
-            if (isCreeperFusing(entity) && dist < 5) {
+            // any creeper about to blow, not just the one we're fighting: one walked up while the bot fought a zombie
+            const fuser = isCreeperFusing(entity) && dist < 5 ? entity :
+                world.getNearestEntityWhere(bot, e => isCreeperFusing(e) && e.position.distanceTo(bot.entity.position) < 5, 5);
+            if (fuser) {
                 if (has_shield) {
                     setMode(null);
-                    await bot.lookAt(entity.position.offset(0, 1, 0), true);
+                    await bot.lookAt(fuser.position.offset(0, 1, 0), true);
                     if (!shielding) bot.activateItem(true);
                     shielding = true;
-                } else {
+                } else if (fuser === entity) {
                     setMode('flee');
+                } else {
+                    mode = 'flee_other';
+                    bot.pathfinder.setGoal(new pf.goals.GoalInvert(new pf.goals.GoalFollow(fuser, 7)), true);
                 }
                 await sleep(100);
                 continue;
             }
+            if (mode === 'flee_other') mode = null;
             // block with the shield whenever we aren't swinging: between swings up close (blocks melee hits), and while
             // walking up to an archer (blocks arrows). it comes down for each swing
             const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
