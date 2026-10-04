@@ -534,12 +534,16 @@ export class Task {
         const bot = this.agent.bot;
         const dimension = (bot.game.dimension || '').replace('minecraft:', '');
         const pos = bot.entity.position.clone();
-        if (dimension === 'overworld' && !bot.entity.isInWater && bot.blockAt(pos)?.skyLight === 15) {
+        // somewhere crawling with mobs (a dark forest, a cave mouth) killed three runs in a row before they had a
+        // sword, so start those somewhere else nearby
+        const mobs = Object.values(bot.entities).filter(e => e.type === 'hostile' && e.position.distanceTo(pos) < 16).length;
+        if (dimension === 'overworld' && !bot.entity.isInWater && bot.blockAt(pos)?.skyLight === 15 && mobs < 2) {
             console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
             return;
         }
+        if (mobs >= 2) console.log(`${mobs} hostile mobs around ${pos.floored()}, starting somewhere else.`);
         // spreadplayers refuses a range of 1 ("too many entities for space"), so the tightest that works is a few blocks
-        const tries = [[pos, 4], [pos, 32], [pos, 128]];
+        const tries = mobs >= 2 ? [[pos, 96], [pos, 192]] : [[pos, 4], [pos, 32], [pos, 128]];
         if (bot.spawnPoint) tries.push([bot.spawnPoint, 64]);
         for (const [center, range] of tries) {
             const moved = new Promise((resolve) => {
