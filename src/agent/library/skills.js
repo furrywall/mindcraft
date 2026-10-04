@@ -1682,8 +1682,6 @@ export async function goToGoal(bot, goal) {
     let movements = carefulMovements;
 
     const doorCheckInterval = startDoorInterval(bot);
-    // long or complicated paths need more thinking time than the default 5s
-    bot.pathfinder.thinkTimeout = 10000;
 
     const max_attempts = 3;
     try {

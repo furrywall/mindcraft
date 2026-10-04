@@ -194,6 +194,12 @@ export class Agent {
         });
 
         // Set up auto-eat
+        // underground, where every block can be dug through, each step of the path search makes up to ~20 new nodes,
+        // and 10s of searching with no limit ran the agent out of memory (4 GB) mining iron. keep the default 5s, and
+        // skip routes costing over 160 more than the straight-line estimate: still room for long dug tunnels
+        this.bot.pathfinder.thinkTimeout = 5000;
+        this.bot.pathfinder.searchRadius = 160;
+
         // change only these: replacing the whole options object dropped eatingTimeout, so the bot stopped eating as
         // soon as it started, and checkOnItemPickup. the default banned foods already cover raw chicken, rotten flesh
         // and golden apples (self_preservation saves those for healing)
@@ -552,7 +558,8 @@ export class Agent {
                 if (!p) return;
                 const dimension = (bot.game.dimension || '').replace('minecraft:', '');
                 const path = bot.pathfinder.isMoving() ? 'moving' : bot.pathfinder.goal ? 'planning' : 'none';
-                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path} action=${this.actions.currentActionLabel || 'idle'}`);
+                const heap = Math.round(process.memoryUsage().heapUsed / 1048576);
+                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path} heap=${heap}MB action=${this.actions.currentActionLabel || 'idle'}`);
             }, status_secs * 1000);
         }
 
