@@ -5,6 +5,7 @@ import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
+import { getNextStepHint } from './commands/queries.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -399,8 +400,12 @@ export class Agent {
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
                 used_command = true;
 
-                if (execute_res)
+                if (execute_res) {
+                    // in a beat_game run, end each result with the next step, so a turn isn't spent on !gameProgress
+                    if (this.task?.task_type === 'beat_game' && command_name !== '!gameProgress')
+                        execute_res += '\n' + getNextStepHint(this.bot);
                     this.history.add('system', execute_res);
+                }
                 else
                     break;
             }

@@ -1,6 +1,6 @@
 {
     "beat_the_game": {
-        "goal": "Speedrun Minecraft from scratch: beat the game as fast as you can. Kill the ender dragon, then walk through the exit portal in the end (!enterPortal with end_portal) so the credits roll. Only gather and craft what the run needs, and don't stop to build or explore for fun. Gather everything a step needs in one go (for example all the cobblestone for the pickaxe, sword and furnace at once) instead of going back for more. Eat and keep health up: a death loses everything. Use !gameProgress to see what you still need and what to do next, and check it again after every step.",
+        "goal": "Speedrun Minecraft from scratch: beat the game as fast as you can. Kill the ender dragon, then walk through the exit portal in the end (!enterPortal with end_portal) so the credits roll. Only gather and craft what the run needs, and don't stop to build or explore for fun. Gather everything a step needs in one go (for example all the cobblestone for the pickaxe, sword and furnace at once) instead of going back for more. Eat and keep health up: a death loses everything. Every command result ends with your next step, so go straight on to it; use !gameProgress only when you want the full checklist.",
         "initial_inventory": {
             "0": {}
         },

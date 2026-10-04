@@ -354,6 +354,12 @@ export const queryList = [
     },
 ];
 
+export function getNextStepHint(bot) {
+    // the next step (and food note) from !gameProgress, added to command results so the model doesn't have to spend
+    // a turn on !gameProgress after every command
+    return getGameProgress(bot).split('\n').filter(line => line.startsWith('Next step:') || line.startsWith('Food:')).join('\n');
+}
+
 function getGameProgress(bot) {
     const inv = world.getInventoryCounts(bot);
     const has = (name, n = 1) => (inv[name] || 0) >= n;
