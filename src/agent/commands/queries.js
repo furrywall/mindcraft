@@ -391,8 +391,10 @@ function getGameProgress(bot) {
     const geared = any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1;
 
     // the wood to start the run with, only looked up while it's needed
-    const nearest_log = any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe', 'wooden_pickaxe') ? null :
-        world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+    const findLog = () => world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+    const nearest_log = any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe', 'wooden_pickaxe') ? null : findLog();
+    // planks we have or can make from the logs we carry, any wood
+    const planks = Object.entries(inv).reduce((n, [name, c]) => n + (name.endsWith('_planks') ? c : name.endsWith('_log') ? 4 * c : 0), 0);
 
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
@@ -429,7 +431,12 @@ function getGameProgress(bot) {
                 const have_shield = has('shield') || bot.inventory.slots[45]?.name === 'shield';
                 const have_sword = any('iron_sword', 'diamond_sword', 'netherite_sword');
                 const todo = [];
-                if (!have_shield) todo.push('a shield (1 iron_ingot, 6 planks: you block with it in fights)');
+                if (!have_shield) {
+                    // the model went looking for oaks among birches, so name the wood that's here
+                    const log = planks < 6 ? findLog() : null;
+                    todo.push('a shield (1 iron_ingot, 6 planks of any wood: you block with it in fights' +
+                        (planks >= 6 ? ')' : log ? `; for the planks, !collectBlocks("${log}", 2) from the trees nearby)` : '; you need 2 logs of any wood for the planks)'));
+                }
                 if (!have_sword) todo.push('an iron_sword (2 iron_ingot)');
                 if (armor.length < 1) todo.push('an iron_chestplate (8 iron_ingot), then put it on with !equip("iron_chestplate")');
                 const iron_needed = (have_shield ? 0 : 1) + (have_sword ? 0 : 2) + (armor.length < 1 ? 8 : 0);
