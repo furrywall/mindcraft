@@ -602,6 +602,10 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 log(bot, `${entity.name} got away.`);
                 return false;
             }
+            if (bot.health <= 6 && mc.isHostile(entity)) {
+                log(bot, `Too hurt to keep fighting ${entity.name}.`);
+                return false;
+            }
 
             if (isCreeperFusing(entity) && dist < 5) {
                 if (has_shield) {
@@ -859,6 +863,11 @@ export async function defendSelf(bot, range=9) {
     let enemy = nextEnemy();
     while (enemy) {
         if (bot.interrupt_code) return false;
+        // the decision to fight is made when it starts; if it goes badly, stop and let self defense hide or run
+        if (bot.health <= 6) {
+            log(bot, `Too hurt to keep fighting.`);
+            break;
+        }
         attacked = true;
         let killed = false;
         if (isRangedTarget(bot, enemy) && hasBowAndArrows(bot)) {
@@ -1838,6 +1847,10 @@ export async function bunkerDown(bot) {
      * await skills.bunkerDown(bot);
      **/
     const start = bot.entity.position.floored();
+    if (bot.entity.isInWater) {
+        log(bot, `Can't bunker down in water, the hole would flood.`);
+        return false;
+    }
     // the two blocks we dig and the one we land on must be solid: no digging into lava, water or a cave drop
     for (let dy = 1; dy <= 3; dy++) {
         const block = bot.blockAt(start.offset(0, -dy, 0));
