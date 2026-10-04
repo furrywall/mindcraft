@@ -353,7 +353,10 @@ export async function smeltItem(bot, itemName, num=1) {
         log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
         return false;
     }
-    log(bot, `Successfully smelted ${itemName}, got ${total} ${mc.getItemName(smelted_item.type)}.`);
+    // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
+    const output_name = mc.getItemName(smelted_item.type);
+    bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < (inv_counts[output_name] || 0) + total;
+    log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
     return true;
 }
 

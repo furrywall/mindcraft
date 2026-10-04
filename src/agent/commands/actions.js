@@ -283,7 +283,8 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, item_name, num) => {
             let success = await skills.smeltItem(agent.bot, item_name, num);
-            if (success) {
+            // restarting costs a lot of time, so only do it when the smelted items are missing from the inventory
+            if (success && agent.bot._smelt_inventory_stale) {
                 setTimeout(() => {
                     agent.cleanKill('Safely restarting to update inventory.');
                 }, 500);

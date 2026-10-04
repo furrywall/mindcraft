@@ -233,7 +233,7 @@ class CookingCraftingTaskValidator {
 }
 
 export class Task {
-    constructor(agent, task_data, taskStartTime = null) {
+    constructor(agent, task_data, taskStartTime = null, taskSplits = []) {
         this.agent = agent;
         this.data = null;
         if (taskStartTime !== null)
@@ -280,7 +280,7 @@ export class Task {
                 this.validator = new CookingCraftingTaskValidator(this.data, this.agent);
 
             } else if (this.task_type === 'beat_game') {
-                this.validator = new BeatGameTaskValidator(this.data, this.agent, this.taskStartTime);
+                this.validator = new BeatGameTaskValidator(this.data, this.agent, this.taskStartTime, taskSplits);
             } else {
                 this.validator = null;
             }
