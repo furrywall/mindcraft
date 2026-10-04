@@ -465,6 +465,11 @@ function getGameProgress(bot) {
         survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
             'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore, coal_ore, gravel for flint; lava pools for the portal are deeper) until morning.';
     }
+    else if (dimension === 'overworld' && steps[0].done && !has_sword && !steps[2].done) {
+        // the mining for iron happens in caves full of zombies, and a pickaxe is a poor weapon: one run died to the
+        // first few with full health. a stone sword is a few seconds' work
+        survival = `You have no sword: !craftRecipe("stone_sword", 1) now (2 cobblestone, 1 stick)${count('cobblestone') >= 2 ? '' : ' after mining 2 cobblestone'}, before you go into caves for iron.`;
+    }
     else if (dimension === 'overworld' && steps[0].done && need_food) {
         if (raw_meat.length > 0)
             survival = `You're low on food: cook your raw meat with !smeltItem("${raw_meat[0]}", ${count(raw_meat[0])}) (needs a furnace, 8 cobblestone, and fuel).`;

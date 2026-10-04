@@ -668,8 +668,15 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 return false;
             }
             if (bot.health <= 8 && mc.isHostile(entity)) {
-                log(bot, `Too hurt to keep fighting ${entity.name}.`);
-                return false;
+                // turning our back on a mob that's nearly dead just gets us hit from behind: finish it off if two
+                // hits will do (mobs' health comes in their metadata)
+                const mob_health = entity.metadata?.[9];
+                const finishable = typeof mob_health === 'number' && bot.health > 4 &&
+                    mob_health <= 2 * mc.getMeleeDamage(bot.heldItem?.name);
+                if (!finishable) {
+                    log(bot, `Too hurt to keep fighting ${entity.name}.`);
+                    return false;
+                }
             }
 
             if (isCreeperFusing(entity) && dist < 5) {
