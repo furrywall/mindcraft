@@ -236,6 +236,7 @@ const modes_list = [
                 const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
                 const hide = bot.health <= 8 || (night && bot.health <= 12);
                 say(agent, `Too dangerous to fight the ${enemy.name}, ${hide ? 'hiding' : 'running'}!`);
+                console.log(`[fight] not fighting ${enemy.name}: health ${bot.health}, ${threats} threats, weapon ${weapon}, water ${bot.entity.isInWater}, shield ${has_shield}, night ${night}`);
                 execute(this, agent, async () => {
                     if (!hide || !await skills.bunkerDown(bot))
                         await skills.avoidEnemies(bot, 16);

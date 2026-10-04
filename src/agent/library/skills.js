@@ -625,7 +625,7 @@ async function equipShield(bot) {
     }
 }
 
-async function meleeFight(bot, entity, {timeout=60000} = {}) {
+async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
     /* Melee an entity until it dies. Times swings to the weapon cooldown, jump-crits when it can,
        blocks or backs off from exploding creepers, and gives up if the target can't be reached.
        Returns true if the entity died. */
@@ -667,7 +667,7 @@ async function meleeFight(bot, entity, {timeout=60000} = {}) {
                 log(bot, `${entity.name} got away.`);
                 return false;
             }
-            if (bot.health <= 8 && mc.isHostile(entity)) {
+            if (bot.health <= 8 && mc.isHostile(entity) && !cornered) {
                 // turning our back on a mob that's nearly dead just gets us hit from behind: finish it off if two
                 // hits will do (mobs' health comes in their metadata)
                 const mob_health = entity.metadata?.[9];
@@ -2549,6 +2549,7 @@ export async function avoidEnemies(bot, distance=16) {
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), distance);
     // a faster mob or an archer can keep up forever, and self_preservation (air, healing) is paused while we run
     const start = Date.now();
+    let cornered_since = null;
     while (enemy && Date.now() - start < 20000) {
         const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
         const inverted_goal = new pf.goals.GoalInvert(follow);
@@ -2559,8 +2560,21 @@ export async function avoidEnemies(bot, distance=16) {
         if (bot.interrupt_code) {
             break;
         }
+        // it keeps up with us (a cave, a pit, digging our way out): running only gets us hit from behind, and
+        // swinging every half second ignores the weapon's cooldown so the hits barely hurt. turn and fight it properly
         if (enemy && bot.entity.position.distanceTo(enemy.position) < 3) {
-            await attackEntity(bot, enemy, false);
+            cornered_since = cornered_since || Date.now();
+            if (Date.now() - cornered_since > 1500) {
+                log(bot, `Can't get away from the ${enemy.name}, fighting it.`);
+                stopPathfinding(bot);
+                await meleeFight(bot, enemy, {timeout: 10000, cornered: true});
+                cornered_since = null;
+                if (bot.interrupt_code) break;
+                enemy = world.getNearestEntityWhere(bot, entity => mc.isThreat(bot, entity), distance);
+            }
+        }
+        else {
+            cornered_since = null;
         }
     }
     stopPathfinding(bot);
