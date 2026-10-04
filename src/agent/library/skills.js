@@ -3899,6 +3899,23 @@ export async function castNetherPortal(bot) {
     };
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+    // the side columns can only be poured from the spot in front of them: from the middle, the filling inside the
+    // frame is in the way, and the first real cast failed at a site with ground only in front of the middle. so
+    // make the missing standing spots: a floor block, and room for our head
+    for (const i of [1, 2, 0, 3]) {
+        if (bot.interrupt_code) return false;
+        const spot = at(i, 1, -2);
+        if (stands.some(t => t.equals(spot))) continue;
+        for (const p of [spot, spot.offset(0, 1, 0)]) {
+            const b = bot.blockAt(p);
+            if (b && !isAirLike(b) && b.diggable && b.name !== 'water' && b.name !== 'lava') await breakBlockAt(bot, p.x, p.y, p.z);
+        }
+        const floor = spot.offset(0, -1, 0);
+        if (bot.blockAt(floor)?.boundingBox !== 'block') await place(floor);
+        if (bot.blockAt(floor)?.boundingBox === 'block' && isAirLike(bot.blockAt(spot)) && isAirLike(bot.blockAt(spot.offset(0, 1, 0))))
+            stands.push(spot);
+    }
+
     // clear the frame slots above the ground and the space above them. the two floor slots are dug just before they're
     // cast: holes in the ground under our feet tripped up the pathfinder while building the wall
     for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
@@ -3936,7 +3953,8 @@ export async function castNetherPortal(bot) {
 
     // pour from whichever spot in front can aim at the face, trying the backing wall, then the block under, then the sides
     const pour = async (bucketName, pos) => {
-        for (const s of stands) {
+        // the spot straight in front has the clearest line, so try the nearest first
+        for (const s of [...stands].sort((a, b) => a.distanceTo(pos) - b.distanceTo(pos))) {
             if (bot.interrupt_code) return false;
             await goToPosition(bot, s.x, s.y, s.z, 0);
             // still sliding to a stop, the server sees us a little off and the pour lands next to where we aimed
