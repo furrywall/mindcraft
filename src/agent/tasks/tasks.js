@@ -557,8 +557,11 @@ export class Task {
         // leave it inside a wall. bots now start where they are
         let bot = this.agent.bot;
 
-        if (this.task_type === 'beat_game')
+        if (this.task_type === 'beat_game') {
             await this.moveToSurface();
+            // a new world starts in the morning. starting a run empty-handed at night got the bot killed within minutes
+            bot.chat('/time set day');
+        }
 
         if (this.data.agent_count && this.data.agent_count > 1) {
             // TODO wait for other bots to join

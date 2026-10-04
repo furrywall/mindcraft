@@ -194,11 +194,14 @@ export class Agent {
         });
 
         // Set up auto-eat
-        this.bot.autoEat.options = {
+        // change only these: replacing the whole options object dropped eatingTimeout, so the bot stopped eating as
+        // soon as it started, and checkOnItemPickup. the default banned foods already cover raw chicken, rotten flesh
+        // and golden apples (self_preservation saves those for healing)
+        Object.assign(this.bot.autoEat.options, {
             priority: 'foodPoints',
-            startAt: 14,
-            bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
-        };
+            // health only regenerates at 18+ hunger, so starting at 14 could leave the bot hurt for a whole run
+            startAt: 18,
+        });
 
         if (save_data?.self_prompt) {
             if (init_message) {

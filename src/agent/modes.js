@@ -39,7 +39,8 @@ const modes_list = [
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            const head_in_water = skills.isWaterBlock(blockAbove);
+            // the eyes (1.62 up) can be underwater while the block just above the feet isn't
+            const head_in_water = skills.isWaterBlock(blockAbove) || skills.isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1.62, 0)));
             if (!head_in_water) this.underwater_since = null;
             else if (!this.underwater_since) this.underwater_since = Date.now();
             // a full breath is 20 and lasts 15 seconds. come up while there's still time, whatever we're doing:

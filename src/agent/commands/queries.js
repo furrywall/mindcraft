@@ -368,11 +368,11 @@ function getGameProgress(bot) {
 
     const steps = [
         {done: any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Stone tools',
-            next: 'Collect logs, craft planks, sticks, a crafting_table and a wooden_pickaxe, then mine cobblestone for a stone_pickaxe.'},
+            next: 'Collect logs, craft planks, sticks, a crafting_table and a wooden_pickaxe, then mine cobblestone for a stone_pickaxe and a stone_sword.'},
         {done: any('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'), text: 'Iron pickaxe',
             next: 'Mine iron_ore (dig down to y=16 or explore caves), smelt raw_iron in a furnace, craft an iron_pickaxe.'},
-        {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && armor.length >= 2, text: 'Sword and some armor',
-            next: 'Get more iron: craft an iron_sword, iron_chestplate, iron_leggings, and a shield.'},
+        {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 2, text: 'Sword, shield and some armor',
+            next: 'Get more iron: craft a shield first (1 iron_ingot, 6 planks: you block with it in fights), then an iron_sword, iron_chestplate and iron_leggings.'},
         {done: has('bow') && count('arrow') >= 16, text: 'Bow and arrows',
             next: 'Craft a bow (3 sticks, 3 string from spiders) and arrows (flint, stick, feather from chickens).'},
         {done: any('diamond_pickaxe', 'netherite_pickaxe') || dimension !== 'overworld' || eyes > 0, text: 'Diamond pickaxe (to mine obsidian)',
@@ -400,13 +400,31 @@ function getGameProgress(bot) {
         if (steps[i + 1].done) steps[i].done = true;
     }
 
+    // staying alive comes before the next milestone: health only regenerates with 18+ hunger, and a death loses everything
+    const banned = bot.autoEat?.options?.bannedFood || [];
+    const food = Object.entries(inv).filter(([name]) => bot.registry.foodsByName[name] && !banned.includes(name))
+        .reduce((n, [, c]) => n + c, 0);
+    const raw_meat = ['beef', 'porkchop', 'mutton', 'chicken', 'rabbit', 'cod', 'salmon'].filter(name => has(name));
+    const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
+    const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
+    let survival = null;
+    if (dimension === 'overworld' && steps[0].done) {
+        if (night && !has_sword && bot.blockAt(bot.entity.position)?.skyLight > 7)
+            survival = 'It\'s night and mobs are out: craft a stone_sword (2 cobblestone, 1 stick) before anything else on the surface, or keep working underground.';
+        else if (food < 4 && raw_meat.length > 0)
+            survival = `You're low on food: cook your raw meat with !smeltItem("${raw_meat[0]}", ${count(raw_meat[0])}) (needs a furnace, 8 cobblestone, and fuel).`;
+        else if (food < 4)
+            survival = 'You\'re low on food: kill a few animals nearby with !attack (cow, pig, sheep or chicken), then cook the meat with !smeltItem. Aim for 10+ cooked food before going far.';
+    }
+
     let res = 'GAME PROGRESS (goal: kill the ender dragon)';
-    res += `\n- Dimension: ${dimension}`;
+    res += `\n- Dimension: ${dimension}${night ? ' (night)' : ''}`;
+    res += `\n- Health ${Math.round(bot.health)}/20, hunger ${bot.food}/20, food items: ${food}`;
     for (const step of steps) {
         res += `\n- [${step.done ? 'x' : ' '}] ${step.text}`;
     }
     // once in the end, the dragon is the only thing that matters
     const next = dimension === 'the_end' ? steps[steps.length - 1] : steps.find(s => !s.done);
-    res += `\nNext step: ${next.next}`;
+    res += `\nNext step: ${survival || next.next}`;
     return res;
 }
