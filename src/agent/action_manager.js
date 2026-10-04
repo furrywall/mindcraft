@@ -60,7 +60,10 @@ export class ActionManager {
     async stop() {
         if (!this.executing) return;
         const start = Date.now();
-        while (this.executing) {
+        // only stop the action that's running now: once it's done, a newer one may start (e.g. right after a
+        // timeout), and that one must not be interrupted by this old request
+        const gen = this.generation;
+        while (this.executing && this.generation === gen) {
             this.agent.requestInterrupt();
             if (Date.now() - start > STOP_GRACE_MS) {
                 if (!this._abandon) {
