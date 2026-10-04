@@ -418,17 +418,20 @@ function getGameProgress(bot) {
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
     const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
+    // food only comes first when it's actually needed: getting hungry, or hurt with nothing to eat. sending a well-fed
+    // bot off to find cows wasted minutes exploring, and pulled it through water
+    const need_food = food < 4 && (bot.food <= 12 || (bot.health < 14 && bot.food < 18));
     if (dimension === 'overworld' && night && on_surface && !steps[2].done) {
         // a bot without armor on the surface at night keeps dying to zombies, skeletons and creepers (night falls about
         // 10 minutes into a fresh run). underground it's safe, and the iron and diamonds it needs next are down there
         survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
             'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore for armor, coal_ore, diamonds deeper) until morning.';
     }
-    else if (dimension === 'overworld' && steps[0].done) {
-        if (food < 4 && raw_meat.length > 0)
+    else if (dimension === 'overworld' && steps[0].done && need_food) {
+        if (raw_meat.length > 0)
             survival = `You're low on food: cook your raw meat with !smeltItem("${raw_meat[0]}", ${count(raw_meat[0])}) (needs a furnace, 8 cobblestone, and fuel).`;
-        else if (food < 4)
-            survival = 'You\'re low on food: kill a few animals nearby with !attack (cow, pig, sheep or chicken), then cook the meat with !smeltItem. Aim for 10+ cooked food before going far.';
+        else
+            survival = 'You\'re low on food: kill a few animals nearby with !attack (cow, pig, sheep or chicken), then cook the meat with !smeltItem.';
     }
 
     let res = 'GAME PROGRESS (goal: kill the ender dragon)';
@@ -440,6 +443,8 @@ function getGameProgress(bot) {
     // once in the end, the dragon is the only thing that matters
     const next = dimension === 'the_end' ? steps[steps.length - 1] : steps.find(s => !s.done);
     res += `\nNext step: ${survival || next.next}`;
+    if (!survival && food < 4 && dimension === 'overworld')
+        res += '\nFood: kill animals you pass on the way (cow, pig, sheep) and cook the meat, but don\'t go searching for them.';
     res += '\nGather everything a step needs in one trip and craft it together, instead of going back for more of the same thing.';
     return res;
 }
