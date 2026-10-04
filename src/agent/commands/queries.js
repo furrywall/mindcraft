@@ -416,7 +416,23 @@ function getGameProgress(bot) {
                   '15 covers the iron_pickaxe (3), 2 buckets (6), shield (1), iron_sword (2) and flint_and_steel (1), plus spares. Don\'t explore the surface for iron. Grab coal you pass for fuel, then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
-            next: 'Craft a shield first (1 iron_ingot, 6 planks: you block with it in fights) and an iron_sword, then an iron_chestplate (8 iron). Mine whatever iron you are short of in one trip.'},
+            // only what's still missing: the same advice every time had the bot craft 4 shields and 2 swords
+            next: (() => {
+                const have_shield = has('shield') || bot.inventory.slots[45]?.name === 'shield';
+                const have_sword = any('iron_sword', 'diamond_sword', 'netherite_sword');
+                const todo = [];
+                if (!have_shield) todo.push('a shield (1 iron_ingot, 6 planks: you block with it in fights)');
+                if (!have_sword) todo.push('an iron_sword (2 iron_ingot)');
+                if (armor.length < 1) todo.push('an iron_chestplate (8 iron_ingot), then put it on with !equip("iron_chestplate")');
+                const iron_needed = (have_shield ? 0 : 1) + (have_sword ? 0 : 2) + (armor.length < 1 ? 8 : 0);
+                const iron_have = count('iron_ingot') + count('raw_iron');
+                const owned = [have_shield && 'a shield', have_sword && 'an iron_sword'].filter(Boolean);
+                return (owned.length ? `You already have ${owned.join(' and ')}: don't craft another. ` : '') +
+                    `Still need ${todo.join(', ')}. ` +
+                    (iron_have >= iron_needed
+                        ? `You have enough iron (${iron_have}): ${count('raw_iron') > 0 ? 'smelt the raw_iron and ' : ''}craft them.`
+                        : `That takes ${iron_needed} iron and you have ${iron_have}: mine ${iron_needed - iron_have} more iron_ore in one trip, then smelt it all at once.`);
+            })()},
         // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
         {done: portal_kit.length === 0 || (portal_near && geared) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone)',
             next: `To cast a nether portal without diamonds you still need: ${portal_kit.join('; ')}. Get it all in one trip.`},
