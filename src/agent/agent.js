@@ -552,6 +552,17 @@ export class Agent {
         // MINDCRAFT_STATUS_SECONDS=10 prints where the bot is and what it's doing every 10s, for watching a run from its log
         const status_secs = Number(process.env.MINDCRAFT_STATUS_SECONDS);
         if (status_secs > 0) {
+            // the agent ran out of memory (8 GB) within a minute while collecting ore underground. log big path
+            // searches, and the heap every 2s once it's over 1 GB, to see what grows
+            this.bot.on('path_update', (r) => {
+                if (r.generatedNodes > 100000)
+                    console.log(`[path] ${r.status} visited=${r.visitedNodes} generated=${r.generatedNodes} time=${Math.round(r.time)}ms action=${this.actions.currentActionLabel || 'idle'}`);
+            });
+            setInterval(() => {
+                const heap = Math.round(process.memoryUsage().heapUsed / 1048576);
+                if (heap > 1024)
+                    console.log(`[heap] ${heap}MB action=${this.actions.currentActionLabel || 'idle'} path=${this.bot.pathfinder.isMoving() ? 'moving' : this.bot.pathfinder.goal ? 'planning' : 'none'}`);
+            }, 2000);
             setInterval(() => {
                 const bot = this.bot;
                 const p = bot.entity?.position;
