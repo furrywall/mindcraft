@@ -942,6 +942,9 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     // collectblock paths with plain pathfinder movements of its own unless given some, which swim through anything.
     // it changes the ones it gets, so it gets its own copy
     bot.collectBlock.movements = makeMovements(bot);
+    // collectblock turns dontCreateFlow off on the movements it's given, so its paths dug blocks next to and under
+    // water: up to 25x slower to dig down there, and the bot ran out of air. keep it on, whatever the plugin sets
+    Object.defineProperty(bot.collectBlock.movements, 'dontCreateFlow', { get: () => true, set: () => {} });
     for (const type of blocktypes) {
         const id = mc.getBlockId(type);
         if (id != null) bot.collectBlock.movements.blocksCantBreak.delete(id);

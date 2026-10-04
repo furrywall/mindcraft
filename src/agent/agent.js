@@ -559,7 +559,8 @@ export class Agent {
                 const dimension = (bot.game.dimension || '').replace('minecraft:', '');
                 const path = bot.pathfinder.isMoving() ? 'moving' : bot.pathfinder.goal ? 'planning' : 'none';
                 const heap = Math.round(process.memoryUsage().heapUsed / 1048576);
-                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path} heap=${heap}MB action=${this.actions.currentActionLabel || 'idle'}`);
+                const dig = bot.targetDigBlock ? ` dig=${bot.targetDigBlock.name}` : '';
+                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} path=${path}${dig} heap=${heap}MB action=${this.actions.currentActionLabel || 'idle'}`);
             }, status_secs * 1000);
         }
 
