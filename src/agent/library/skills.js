@@ -118,6 +118,19 @@ function getScaffoldItem(bot) {
     return null;
 }
 
+async function resyncInventory(bot) {
+    // the bot's copy of its inventory can drift from the server's after crafting or smelting. closing the inventory
+    // makes the server put back anything left on the cursor or in the 2x2 crafting grid, then mineflayer asks for the real contents
+    try {
+        bot._client.write('close_window', {windowId: 0});
+        await bot._syncWindow(bot.inventory);
+        return true;
+    } catch (err) {
+        console.log('Failed to resync the inventory:', err.message);
+        return false;
+    }
+}
+
 export async function craftRecipe(bot, itemName, num=1) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -184,8 +197,34 @@ export async function craftRecipe(bot, itemName, num=1) {
     const inventory = world.getInventoryCounts(bot); //Items in the agents inventory
     const requiredIngredients = mc.ingredientsFromPrismarineRecipe(recipe); //Items required to use the recipe once.
     const craftLimit = mc.calculateLimitingResource(inventory, requiredIngredients);
-    
-    await bot.craft(recipe, Math.min(craftLimit.num, num), craftingTable);
+    const craftNum = Math.min(craftLimit.num, num);
+    const had = inventory[itemName] || 0;
+
+    try {
+        await bot.craft(recipe, craftNum, craftingTable);
+    } catch (err) {
+        // when the inventory has drifted, mineflayer waits for a slot update that never comes or can't find an ingredient.
+        // get the real inventory back and craft whatever is still missing
+        console.log(`Crafting ${itemName} failed (${err.message}), resyncing the inventory and trying again.`);
+        await resyncInventory(bot);
+        const crafted = Math.floor(((world.getInventoryCounts(bot)[itemName] || 0) - had) / recipe.result.count);
+        const left = Math.min(craftNum - crafted, mc.calculateLimitingResource(world.getInventoryCounts(bot), requiredIngredients).num);
+        try {
+            if (left > 0 && !bot.interrupt_code)
+                await bot.craft(recipe, left, craftingTable);
+        } catch (err) {
+            await resyncInventory(bot);
+            log(bot, `Failed to craft ${itemName}: ${err.message}. You now have ${world.getInventoryCounts(bot)[itemName] || 0} ${itemName}.`);
+            if (placedTable) {
+                await collectBlock(bot, 'crafting_table', 1);
+            }
+            return false;
+        }
+    }
+    // mineflayer resyncs after crafting at a table but not in the inventory grid, where its last click can leave the inventory wrong
+    if (!craftingTable)
+        await resyncInventory(bot);
+
     if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} to craft ${num}, crafted ${craftLimit.num}. You now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     else log(bot, `Successfully crafted ${itemName}, you now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     if (placedTable) {
@@ -355,7 +394,10 @@ export async function smeltItem(bot, itemName, num=1) {
     }
     // mineflayer used to lose track of smelted items until the bot reconnected, so check they showed up (see !smeltItem)
     const output_name = mc.getItemName(smelted_item.type);
-    bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < (inv_counts[output_name] || 0) + total;
+    const expected = (inv_counts[output_name] || 0) + total;
+    if ((world.getInventoryCounts(bot)[output_name] || 0) < expected)
+        await resyncInventory(bot);
+    bot._smelt_inventory_stale = (world.getInventoryCounts(bot)[output_name] || 0) < expected;
     log(bot, `Successfully smelted ${itemName}, got ${total} ${output_name}.`);
     return true;
 }
