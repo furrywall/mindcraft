@@ -1,6 +1,5 @@
 import { readFileSync , writeFileSync, existsSync} from 'fs';
 import { executeCommand } from '../commands/index.js';
-import { getPosition } from '../library/world.js';
 import { ConstructionTaskValidator, Blueprint } from './construction_tasks.js';
 import { CookingTaskInitiator } from './cooking_tasks.js';
 import { BeatGameTaskValidator } from './beat_game_tasks.js';
@@ -366,6 +365,8 @@ export class Task {
     }
 
     isDone() {
+        if (this.initializing)
+            return false;
         let res = null;
         if (this.validator)
             res = this.validator.validate();
@@ -409,6 +410,16 @@ export class Task {
     }
 
     async initBotTask() {
+        // the update loop is already checking the task, so don't score it off last session's inventory while it's reset
+        this.initializing = true;
+        try {
+            await this.setUpTask();
+        } finally {
+            this.initializing = false;
+        }
+    }
+
+    async setUpTask() {
         await this.agent.bot.chat(`/clear ${this.name}`);
         console.log(`Cleared ${this.name}'s inventory.`);
 
@@ -483,7 +494,7 @@ export class Task {
             await this.initiator.init();
         }
 
-        await this.teleportBots();
+        await this.prepareWorld();
 
         if (this.data.agent_count && this.data.agent_count > 1) {
             // TODO wait for other bots to join
@@ -511,54 +522,11 @@ export class Task {
         await this.setAgentGoal();
     }
     
-    async teleportBots() {
-        console.log('\n\nTeleporting bots');
-        function getRandomOffset(range) {
-            return Math.floor(Math.random() * (range * 2 + 1)) - range;
-        }
-
-        let human_player_name = null;
+    async prepareWorld() {
+        // bots used to be teleported to a human player and spread out here. that's gone: the /tp read the bot's
+        // position before the server had moved it, so the spread started from wherever it logged out and could
+        // leave it inside a wall. bots now start where they are
         let bot = this.agent.bot;
-
-        // Finding if there is a human player on the server
-        for (const playerName in bot.players) {
-            const player = bot.players[playerName];
-            if (!this.available_agents.some((n) => n === playerName)) {
-                console.log('Found human player:', player.username);
-                human_player_name = player.username
-                break;
-            }
-        }
-
-        // go the human if there is one and not required for the task
-        if (human_player_name && this.data.human_count === 0) {
-            console.log(`Teleporting ${this.name} to human ${human_player_name}`)
-            bot.chat(`/tp ${this.name} ${human_player_name}`)
-        }
-        else {
-            console.log(`Teleporting ${this.name} to ${this.available_agents[0]}`)
-            bot.chat(`/tp ${this.name} ${this.available_agents[0]}`);
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        // now all bots are teleport on top of each other (which kinda looks ugly)
-        // Thus, we need to teleport them to random distances to make it look better
-
-        /*
-        Note : We don't want randomness for construction task as the reference point matters a lot.
-        Another reason for no randomness for construction task is because, often times the user would fly in the air,
-        then set a random block to dirt and teleport the bot to stand on that block for starting the construction,
-        */
-
-
-        if (this.data.type !== 'construction') {
-            const pos = getPosition(bot);
-            const xOffset = getRandomOffset(5);
-            const zOffset = getRandomOffset(5);
-            bot.chat(`/tp ${this.name} ${Math.floor(pos.x + xOffset)} ${pos.y + 3} ${Math.floor(pos.z + zOffset)}`);
-            await new Promise((resolve) => setTimeout(resolve, 200));
-        }
 
         if (this.data.agent_count && this.data.agent_count > 1) {
             // TODO wait for other bots to join

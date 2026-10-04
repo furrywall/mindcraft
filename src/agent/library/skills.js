@@ -1789,6 +1789,32 @@ export async function swimToAir(bot) {
     return true;
 }
 
+export async function digOut(bot) {
+    /**
+     * Break the blocks the bot is stuck inside of, e.g. after sand or gravel fell on it, so it stops suffocating.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if the bot got free, false otherwise.
+     * @example
+     * await skills.digOut(bot);
+     **/
+    // the pathfinder can't plan a way out from inside a block, and harvesting doesn't matter here, only getting free
+    stopPathfinding(bot);
+    const pos = bot.entity.position;
+    for (const dy of [1, 0]) { // head first, that's the one we suffocate in
+        const block = bot.blockAt(pos.offset(0, dy, 0));
+        if (!block || block.boundingBox !== 'block' || !block.diggable) continue;
+        try {
+            await bot.tool.equipForBlock(block);
+            await bot.dig(block);
+        } catch (err) {
+            log(bot, `Couldn't dig out of ${block.name}: ${err.message}.`);
+            return false;
+        }
+        log(bot, `Dug out of ${block.name} at ${block.position}.`);
+    }
+    return true;
+}
+
 async function gotoWithWatchdog(bot, goal, noProgressMs=30000) {
     /* bot.pathfinder.goto, but it settles as soon as the action is interrupted (the pathfinder only checks
        its stop flag when it reaches the next node of a path, which may never happen), and gives up when the

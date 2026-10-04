@@ -121,7 +121,10 @@ export class Agent {
                 
                 console.log(`${this.name} spawned.`);
                 this.clearBotLogs();
-              
+                // the init message below already checks the task, so don't score it until initBotTask has reset it
+                if (!load_mem && settings.task)
+                    this.task.initializing = true;
+
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
               
@@ -534,6 +537,18 @@ export class Agent {
                 last = start;
             }
         }, INTERVAL);
+
+        // MINDCRAFT_STATUS_SECONDS=10 prints where the bot is and what it's doing every 10s, for watching a run from its log
+        const status_secs = Number(process.env.MINDCRAFT_STATUS_SECONDS);
+        if (status_secs > 0) {
+            setInterval(() => {
+                const bot = this.bot;
+                const p = bot.entity?.position;
+                if (!p) return;
+                const dimension = (bot.game.dimension || '').replace('minecraft:', '');
+                console.log(`[status] ${dimension} (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) hp=${Math.round(bot.health)} food=${bot.food} air=${bot.oxygenLevel} water=${bot.entity.isInWater} action=${this.actions.currentActionLabel || 'idle'}`);
+            }, status_secs * 1000);
+        }
 
         this.bot.emit('idle');
     }
