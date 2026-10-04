@@ -33,6 +33,8 @@ const modes_list = [
             'golden_carrot', 'baked_potato', 'bread', 'cooked_rabbit', 'pumpkin_pie', 'mushroom_stew', 'apple', 'carrot'],
         last_heal: 0,
         underwater_since: null,
+        fireball_id: null,
+        fireball_dist: null,
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
@@ -41,6 +43,18 @@ const modes_list = [
             if (!blockAbove) blockAbove = {name: 'air'};
             // the eyes (1.62 up) can be underwater while the block just above the feet isn't
             const head_in_water = skills.isWaterBlock(blockAbove) || skills.isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1.62, 0)));
+            // a ghast fireball killed the bot from 19 health seconds after it reached the nether. one coming closer
+            // gets blocked with the shield, or punched back
+            const fireball = world.getNearestEntityWhere(bot, e => e.name === 'fireball', 20);
+            const fb_dist = fireball ? fireball.position.distanceTo(bot.entity.position) : null;
+            const incoming = fireball && this.fireball_id === fireball.id && fb_dist < this.fireball_dist - 0.1;
+            this.fireball_id = fireball?.id; this.fireball_dist = fb_dist;
+            if (incoming) {
+                execute(this, agent, async () => {
+                    await skills.blockFireball(bot, fireball);
+                });
+                return;
+            }
             if (!head_in_water) this.underwater_since = null;
             else if (!this.underwater_since) this.underwater_since = Date.now();
             // a full breath is 20 and lasts 15 seconds. come up while there's still time, whatever we're doing:

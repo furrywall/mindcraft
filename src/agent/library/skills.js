@@ -634,6 +634,42 @@ async function equipShield(bot) {
     }
 }
 
+export async function blockFireball(bot, fireball) {
+    /**
+     * Defend against a ghast fireball heading our way: face it with the shield up (a shield stops the blast), or
+     * without one, punch it back when it gets close.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {Entity} fireball, the fireball entity.
+     * @returns {Promise<boolean>} true once the fireball is gone.
+     **/
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const has_shield = await equipShield(bot);
+    stopPathfinding(bot);
+    bot.clearControlStates();
+    let blocking = false, punched = false;
+    const start = Date.now();
+    try {
+        while (fireball.isValid && Date.now() - start < 5000) {
+            if (bot.interrupt_code) return false;
+            const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
+            await bot.lookAt(fireball.position, true);
+            if (has_shield) {
+                if (!blocking) bot.activateItem(true);
+                blocking = true;
+            }
+            else if (fireball.position.distanceTo(eye) < 3.5) {
+                bot.attack(fireball);
+                punched = true;
+            }
+            await sleep(50);
+        }
+    } finally {
+        if (blocking) bot.deactivateItem();
+    }
+    log(bot, has_shield ? `Blocked a ghast fireball with the shield.` : punched ? `Punched a ghast fireball back.` : `Dodged a ghast fireball.`);
+    return !fireball.isValid;
+}
+
 async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
     /* Melee an entity until it dies. Times swings to the weapon cooldown, jump-crits when it can,
        blocks or backs off from exploding creepers, and gives up if the target can't be reached.
