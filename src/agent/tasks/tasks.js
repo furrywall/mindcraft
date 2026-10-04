@@ -3,6 +3,7 @@ import { executeCommand } from '../commands/index.js';
 import { getPosition } from '../library/world.js';
 import { ConstructionTaskValidator, Blueprint } from './construction_tasks.js';
 import { CookingTaskInitiator } from './cooking_tasks.js';
+import { BeatGameTaskValidator } from './beat_game_tasks.js';
 
 const PROGRESS_FILE = './hells_kitchen_progress.json';
 
@@ -278,6 +279,8 @@ export class Task {
             } else if (this.task_type === 'cooking' || this.task_type === 'techtree') {
                 this.validator = new CookingCraftingTaskValidator(this.data, this.agent);
 
+            } else if (this.task_type === 'beat_game') {
+                this.validator = new BeatGameTaskValidator(this.data, this.agent);
             } else {
                 this.validator = null;
             }
