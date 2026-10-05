@@ -14,8 +14,11 @@ export class AgentProcess {
         this.count_id = count_id;
         this.running = true;
 
-        // more heap than node's ~4 GB default, as headroom for big path searches
-        let args = ['--max-old-space-size=8192', init_agent_path, this.name];
+        // more heap than node's ~4 GB default, as headroom for big path searches. on a small machine that also runs
+        // the Minecraft server, cap it lower (MINDCRAFT_MAX_HEAP_MB): one runaway grew the bot to 6.5 GB on a 7.6 GB
+        // box, swapped the server out and crashed it. capped, only the bot dies, and it restarts
+        const heap_mb = parseInt(process.env.MINDCRAFT_MAX_HEAP_MB) || 8192;
+        let args = [`--max-old-space-size=${heap_mb}`, init_agent_path, this.name];
         args.push('-n', this.name);
         args.push('-c', count_id);
         if (load_memory)
