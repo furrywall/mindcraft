@@ -435,9 +435,11 @@ function getGameProgress(bot) {
                 // say exactly how: "or explore caves" sent the bot wandering the surface instead of digging
                 // iron is at every height, and the nearest is usually close (a cave wall, just under the surface):
                 // collecting it digs its own way there, which beats a long staircase to y=16 first
-                : '!collectBlocks("iron_ore", 15) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
+                // just 3 first: the pickaxe as soon as possible (a run resets if it has none by 5 minutes), the rest
+                // gets mined afterwards with it while the first ingots smelt
+                : '!collectBlocks("iron_ore", 3) to mine the nearest iron, even if it is in a cave or under the ground: it digs its way there. ' +
                   (bot.entity.position.y > 24 ? `Only if it finds none, dig down to y=16 where iron is common with !digDown(${Math.round(bot.entity.position.y - 16)}) and try again. ` : '') +
-                  '15 covers the iron_pickaxe (3), 2 buckets (6), shield (1), iron_sword (2) and flint_and_steel (1), plus spares. Don\'t explore the surface for iron. Grab coal you pass for fuel, and 4 gold_ore if you see it (golden boots keep piglins calm in the nether), then smelt the raw_iron with one !smeltItem and craft the iron_pickaxe straight away.'},
+                  'Only 3 for now: smelt them and craft the iron_pickaxe straight away, then mine the rest of the iron (12 more) with it. Grab coal you pass for fuel.'},
         // a speedrun only needs a chestplate: the most protection for the iron, and leggings cost another trip
         {done: any('iron_sword', 'diamond_sword', 'netherite_sword') && has('shield') && armor.length >= 1, text: 'Sword, shield and a chestplate',
             // only what's still missing: the same advice every time had the bot craft 4 shields and 2 swords
@@ -501,7 +503,7 @@ function getGameProgress(bot) {
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
     // things worth mining while sheltering underground at night, by how far along we are
-    const next_underground = !steps[1].done ? '!collectBlocks("iron_ore", 15) and some coal_ore'
+    const next_underground = !steps[1].done ? '!collectBlocks("iron_ore", 3) for the iron_pickaxe, and some coal_ore'
         : !steps[3].done ? 'iron_ore, gold_ore (for golden boots), coal_ore and gravel (for flint), and look for lava to cast the portal'
         : 'coal_ore and cobblestone';
     const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
