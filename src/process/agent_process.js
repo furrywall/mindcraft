@@ -43,11 +43,20 @@ export class AgentProcess {
             }
 
             if (code !== 0 && signal !== 'SIGINT') {
-                // agent must run for at least 10 seconds before restarting
+                // dying within 10 seconds is usually the server being down (it crashed at 3:35 one night and the bot
+                // gave up after one try, leaving the run stalled for 3 hours). keep trying every 30 seconds, and after
+                // half an hour end the process so a runner can start afresh
                 if (Date.now() - last_restart < 10000) {
-                    console.error(`Agent process exited too quickly and will not be restarted.`);
+                    this.quick_fails = (this.quick_fails || 0) + 1;
+                    if (this.quick_fails > 60) {
+                        console.error(`Agent process keeps exiting straight away, giving up.`);
+                        process.exit(1);
+                    }
+                    console.error(`Agent process exited too quickly (${this.quick_fails} in a row), trying again in 30 seconds.`);
+                    setTimeout(() => this.start(true, 'Agent process restarted.', count_id, this.port), 30000);
                     return;
                 }
+                this.quick_fails = 0;
                 console.log('Restarting agent...');
                 this.start(true, 'Agent process restarted.', count_id, this.port);
                 last_restart = Date.now();
