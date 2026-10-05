@@ -1035,6 +1035,75 @@ export async function defendSelf(bot, range=9) {
 
 
 
+// what's worth grabbing on the way, from what the bot is still missing for the run. ores need the right pickaxe
+function opportunityWants(bot) {
+    const inv = world.getInventoryCounts(bot);
+    const c = (n) => inv[n] || 0;
+    const has = (...names) => names.some(n => c(n) > 0);
+    const armor = bot.inventory.slots.slice(5, 9).filter(Boolean).map(i => i.name);
+    const stone_pick = has('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe');
+    const iron_pick = has('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe');
+    const blocks = [], mobs = [];
+    if (has('wooden_pickaxe') || stone_pick) {
+        if (c('coal') + c('charcoal') < 16) blocks.push('coal_ore', 'deepslate_coal_ore');
+    }
+    if (stone_pick && c('iron_ingot') + c('raw_iron') < 6) blocks.push('iron_ore', 'deepslate_iron_ore');
+    const gold_armor = ['golden_boots', 'golden_helmet', 'golden_leggings', 'golden_chestplate'];
+    if (iron_pick && !armor.some(a => gold_armor.includes(a)) && !has(...gold_armor) && c('gold_ingot') + c('raw_gold') < 4)
+        blocks.push('gold_ore', 'deepslate_gold_ore');
+    if (!has('flint', 'flint_and_steel')) blocks.push('gravel');
+    const food = bot.inventory.items().filter(i => bot.registry.foodsByName[i.name]).reduce((n, i) => n + i.count, 0);
+    if (food < 8) mobs.push('cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom');
+    if (!(has('bow') && c('arrow') >= 16) && c('feather') < 4) mobs.push('chicken');
+    const sword = has('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
+    if (!has('bow') && c('string') < 3 && sword && bot.health >= 14) mobs.push('spider');
+    return {blocks, mobs};
+}
+
+let grabbing = false;
+async function grabOnTheWay(bot) {
+    /* Mine wanted ores right next to us and kill a wanted mob close by, so the run doesn't have to come back for
+       them: coal for fuel, iron, gold for the boots, gravel for flint, food, feathers and string. */
+    if (grabbing || bot.interrupt_code) return;
+    grabbing = true;
+    try {
+        const {blocks, mobs} = opportunityWants(bot);
+        const grabbed = [];
+        const exposed = (b) => [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].some(([x, y, z]) => {
+            const n = bot.blockAt(b.position.offset(x, y, z));
+            return n && n.boundingBox === 'empty' && n.name !== 'lava';
+        });
+        for (let i = 0; i < 4 && blocks.length > 0; i++) {
+            if (bot.interrupt_code) return;
+            // the search's filter sees blocks before they have a position, so check that they're reachable after
+            const block = world.getNearestBlocksWhere(bot, b => blocks.includes(b.name), 5, 12).find(exposed);
+            if (!block) break;
+            const name = block.name;
+            // gravel is only for a flint, and digging a lot of it brings more down on our heads
+            if (name === 'gravel' && grabbed.filter(n => n === 'gravel').length >= 2) break;
+            try {
+                await bot.collectBlock.collect(block);
+                grabbed.push(name.replace('deepslate_', ''));
+            } catch (err) {
+                break;
+            }
+        }
+        const mob = mobs.length > 0 ? world.getNearestEntityWhere(bot, e => mobs.includes(e.name) && !e.metadata?.[16] &&
+            e.position.distanceTo(bot.entity.position) < 10, 10) : null;
+        if (mob && !bot.interrupt_code && await world.isClearPath(bot, mob)) {
+            if (await attackEntity(bot, mob, true)) {
+                grabbed.push(mob.name);
+                await pickupNearbyItems(bot);
+            }
+        }
+        if (grabbed.length > 0) log(bot, `Grabbed on the way: ${grabbed.join(', ')}.`);
+    } catch (err) {
+        // never let a side trip break the main job
+    } finally {
+        grabbing = false;
+    }
+}
+
 export async function collectBlock(bot, blockType, num=1, exclude=null) {
     /**
      * Collect one of the given block type.
@@ -1206,6 +1275,8 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             if (success)
                 collected++;
             await autoLight(bot);
+            if (success)
+                await grabOnTheWay(bot);
         }
         catch (err) {
             if (bot.interrupt_code)
