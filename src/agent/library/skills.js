@@ -463,6 +463,13 @@ export async function smeltItem(bot, itemName, num=1) {
                 break;
             }
         }
+        if (bot.interrupt_code) {
+            // something's attacking us: emptying the furnace and walking over to pick it up kept self defense waiting
+            // more than 10 seconds while a skeleton shot the bot. leave it all for later
+            try { bot.closeWindow(furnace); } catch (err) { /* already closed */ }
+            log(bot, `Stopped smelting with ${total} ${itemName} done; the rest is still in the furnace.`);
+            return total > 0;
+        }
         // take all remaining in input/fuel slots
         if (furnace.inputItem()) {
             await furnace.takeInput();
