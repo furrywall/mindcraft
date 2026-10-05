@@ -1051,7 +1051,9 @@ function opportunityWants(bot) {
     const gold_armor = ['golden_boots', 'golden_helmet', 'golden_leggings', 'golden_chestplate'];
     if (iron_pick && !armor.some(a => gold_armor.includes(a)) && !has(...gold_armor) && c('gold_ingot') + c('raw_gold') < 4)
         blocks.push('gold_ore', 'deepslate_gold_ore');
-    if (!has('flint', 'flint_and_steel')) blocks.push('gravel');
+    // flint is for the flint_and_steel, needed only once there's an iron pickaxe: earlier, grabbing every gravel on the
+    // way took 18 of it while the run was still after its stone pickaxe
+    if (iron_pick && !has('flint', 'flint_and_steel') && c('gravel') < 3) blocks.push('gravel');
     const food = bot.inventory.items().filter(i => bot.registry.foodsByName[i.name]).reduce((n, i) => n + i.count, 0);
     if (food < 8) mobs.push('cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom');
     if (!(has('bow') && c('arrow') >= 16) && c('feather') < 4) mobs.push('chicken');
