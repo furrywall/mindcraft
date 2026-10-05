@@ -495,6 +495,10 @@ function getGameProgress(bot) {
     const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
+    // things worth mining while sheltering underground at night, by how far along we are
+    const next_underground = !steps[1].done ? '!collectBlocks("iron_ore", 15) and some coal_ore'
+        : !steps[3].done ? 'iron_ore, gold_ore (for golden boots), coal_ore and gravel (for flint), and look for lava to cast the portal'
+        : 'coal_ore and cobblestone';
     const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
     // food only comes first when it's actually needed: getting hungry, or hurt with nothing to eat. sending a well-fed
     // bot off to find cows wasted minutes exploring, and pulled it through water
@@ -504,6 +508,13 @@ function getGameProgress(bot) {
         // 10 minutes into a fresh run). underground it's safe, and the iron and lava it needs next are down there
         survival = (has_sword ? '' : 'Craft a stone_sword first if you can (2 cobblestone, 1 stick). ') +
             'It\'s night and mobs are out: get off the surface. Dig down with !digDown(10) and mine underground (iron_ore, coal_ore, gravel for flint; lava pools for the portal are deeper) until morning.';
+    }
+    else if (dimension === 'overworld' && night && !on_surface) {
+        // the night_shelter mode digs the bot in at dusk; keep it below ground doing what can be done there
+        const mins = Math.ceil((24000 - bot.time.timeOfDay) / 20 / 60);
+        survival = `It's night (about ${mins} more minutes): stay underground, don't go up to the surface. ` +
+            (!has_sword && steps[0].done ? 'Craft a stone_sword first (2 cobblestone, 1 stick). ' : '') +
+            `Meanwhile do the next step if it can be done down here, or mine what you'll need: ${next_underground}.`;
     }
     else if (dimension === 'overworld' && steps[0].done && !has_sword && !steps[2].done) {
         // the mining for iron happens in caves full of zombies, and a pickaxe is a poor weapon: one run died to the

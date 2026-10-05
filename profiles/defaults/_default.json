@@ -18,6 +18,7 @@
         "unstuck": true,
         "cowardice": false,
         "self_defense": true,
+        "night_shelter": true,
         "hunting": true,
         "item_collecting": true,
         "torch_placing": true,

@@ -268,6 +268,35 @@ const modes_list = [
         }
     },
     {
+        name: 'night_shelter',
+        description: 'At nightfall in the overworld, get off the surface: dig into a sealed hole and carry on underground until morning. Interrupts all actions.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        last_try: 0,
+        update: async function (agent) {
+            // most deaths in a run came at night on the surface (skeletons, spiders, creepers, zombies), and the model
+            // often ignored the hint to go underground. so do it for it, whatever it was doing
+            const bot = agent.bot;
+            if ((bot.game.dimension || '').replace('minecraft:', '') !== 'overworld') return;
+            const t = bot.time.timeOfDay;
+            if (t < 12800 || t >= 23000) return;
+            if (Date.now() - this.last_try < 30000) return;
+            if (bot.entity.isInWater) return; // self preservation gets us out of water first
+            const head = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+            if (!head || head.skyLight < 8) return; // already under cover
+            this.last_try = Date.now();
+            say(agent, 'Night is falling, digging in until morning.');
+            execute(this, agent, async () => {
+                if (await skills.bunkerDown(bot)) {
+                    skills.log(bot, `It's night: you're dug in underground. Stay below ground until morning and mine what you need down here (iron_ore, coal_ore, gravel, lava), don't go back up to the surface.`);
+                    return;
+                }
+                await skills.digStairsDown(bot, 6);
+            });
+        }
+    },
+    {
         name: 'hunting',
         description: 'Hunt nearby animals when idle.',
         interrupts: ['action:followPlayer'],
