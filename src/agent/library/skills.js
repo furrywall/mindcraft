@@ -159,12 +159,26 @@ async function craftMissingIngredients(bot, itemName, num, depth) {
         }
     }
     if (!best) return;
+    // a recipe of more than 4 items needs a crafting table, and without one craftRecipe makes it from the same planks:
+    // a wooden pickaxe kept failing on its first try, with the table having used the planks it was meant to have
+    const units = Object.values(best).reduce((n, per) => n + per, 0);
+    const needs_table = units > 4 && !['crafting_table', 'stick'].includes(itemName) && !itemName.endsWith('_planks') &&
+        !inv()['crafting_table'] && !world.getNearestBlock(bot, 'crafting_table', 16);
     // sticks first: making them uses planks, which would otherwise come out of the planks the recipe itself needs
     const entries = Object.entries(best).sort(([a], [b]) => (b === 'stick') - (a === 'stick'));
+    let table_planks = needs_table ? 4 : 0;
     for (const [name, per] of entries) {
-        const missing = per * num - (inv()[name] || 0);
+        const extra = name.endsWith('_planks') ? table_planks : 0;
+        if (extra) table_planks = 0;
+        const missing = per * num + extra - (inv()[name] || 0);
         if (missing > 0 && (name === 'stick' || name.endsWith('_planks')))
             await craftRecipe(bot, name, Math.ceil(missing / 4), depth + 1); // both recipes make 4
+    }
+    // no planks in the recipe itself (a stone pickaxe): still make the table's, from whatever logs we carry
+    if (table_planks > 0) {
+        const planks = Object.entries(inv()).filter(([n]) => n.endsWith('_planks')).reduce((t, [, c]) => t + c, 0);
+        const log = Object.keys(inv()).find(n => n.endsWith('_log') && !n.startsWith('stripped'));
+        if (planks < 4 && log) await craftRecipe(bot, log.replace(/_log$/, '_planks'), 1, depth + 1);
     }
 }
 
