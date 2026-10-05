@@ -139,6 +139,13 @@ async function craftMissingIngredients(bot, itemName, num, depth) {
     /* Craft the planks and sticks a recipe needs from what we carry. Getting a wooden pickaxe took a round trip to the
        model for each of planks, sticks, the table and the pickaxe, plus failed tries in between. */
     const inv = () => world.getInventoryCounts(bot);
+    // ingots still in the furnace from smeltItem: fetch as many as this needs
+    const bg = bot.background_smelt;
+    if (bg) {
+        const per = Math.max(0, ...(mc.getItemCraftingRecipes(itemName) || []).map(([ingredients]) => ingredients[bg.output] || 0));
+        const short = per * num - (inv()[bg.output] || 0);
+        if (short > 0) await collectBackgroundSmelt(bot, short);
+    }
     const plankable = (name, counts) => (counts[name] || 0) + 4 * (counts[name.replace(/_planks$/, '_log')] || 0);
     // the recipe variant we're closest to having, e.g. spruce planks when we carry spruce logs
     let best = null, best_score = -1;
@@ -461,7 +468,12 @@ export async function smeltItem(bot, itemName, num=1) {
         let smelted_item = null;
         await new Promise(resolve => setTimeout(resolve, 200));
         let last_collected = Date.now();
-        while (total < num) {
+        // ores take 10 seconds each, and waiting at the furnace for all 17 iron held the iron pickaxe back nearly 3
+        // minutes. take the first 3 (a pickaxe's worth) and leave the rest smelting: any craft that needs the ingots
+        // comes back for them (see collectBackgroundSmelt)
+        const background = /^raw_(iron|gold|copper)$/.test(itemName) && num > 3;
+        const wait_for = background ? 3 : num;
+        while (total < wait_for) {
             await new Promise(resolve => setTimeout(resolve, 1000));
             if (furnace.outputItem()) {
                 smelted_item = await furnace.takeOutput();
@@ -483,6 +495,15 @@ export async function smeltItem(bot, itemName, num=1) {
             try { bot.closeWindow(furnace); } catch (err) { /* already closed */ }
             log(bot, `Stopped smelting with ${total} ${itemName} done; the rest is still in the furnace.`);
             return total > 0;
+        }
+        if (background && total > 0 && total < num && furnace.inputItem()) {
+            const output = itemName.replace(/^raw_/, '') + '_ingot';
+            bot.background_smelt = {position: furnaceBlock.position.clone(), output, expected: num - total};
+            bot.closeWindow(furnace);
+            log(bot, `Smelted ${total} ${output} to go on with; the other ${num - total} keep smelting in the furnace at ` +
+                `${furnaceBlock.position} (about ${Math.round((num - total) * 10 / 60 * 10) / 10} minutes). Crafting anything ` +
+                `that needs ${output} fetches them, so carry on meanwhile.`);
+            return true;
         }
         // take all remaining in input/fuel slots
         if (furnace.inputItem()) {
@@ -516,6 +537,51 @@ export async function smeltItem(bot, itemName, num=1) {
     } finally {
         if (bot.currentWindow === furnace) bot.closeWindow(furnace);
     }
+}
+
+export async function collectBackgroundSmelt(bot, need=Infinity) {
+    /**
+     * Fetch ingots left smelting in a furnace by smeltItem, waiting at the furnace if fewer than `need` are done.
+     * Picks the furnace back up once it's empty.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} need, how many ingots are needed now. Defaults to all of them.
+     * @returns {Promise<number>} how many ingots were taken.
+     **/
+    const bg = bot.background_smelt;
+    if (!bg) return 0;
+    const block = bot.blockAt(bg.position);
+    if (block?.name !== 'furnace') {
+        bot.background_smelt = null;
+        return 0;
+    }
+    if (bot.entity.position.distanceTo(bg.position) > 4)
+        await goToPosition(bot, bg.position.x, bg.position.y, bg.position.z, 3);
+    const furnace = await bot.openFurnace(block);
+    let got = 0;
+    try {
+        const deadline = Date.now() + Math.min(need, bg.expected) * 10500 + 5000;
+        while (got < need && Date.now() < deadline && !bot.interrupt_code) {
+            if (furnace.outputItem()) {
+                const taken = await furnace.takeOutput();
+                got += taken?.count || 0;
+            }
+            else if (!furnace.inputItem()) break;
+            else await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        bg.expected = Math.max(0, bg.expected - got);
+        if (!furnace.inputItem()) {
+            // all done: take what's left and the furnace with us
+            if (furnace.outputItem()) got += (await furnace.takeOutput())?.count || 0;
+            if (furnace.fuelItem()) await furnace.takeFuel();
+            bot.closeWindow(furnace);
+            bot.background_smelt = null;
+            await collectBlock(bot, 'furnace', 1);
+        }
+    } finally {
+        if (bot.currentWindow === furnace) bot.closeWindow(furnace);
+    }
+    log(bot, `Fetched ${got} ${bg.output} from the furnace` + (bot.background_smelt ? `, ${bg.expected} more still smelting.` : '.'));
+    return got;
 }
 
 export async function clearNearestFurnace(bot) {

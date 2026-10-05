@@ -362,6 +362,9 @@ export function getNextStepHint(bot) {
 
 function getGameProgress(bot) {
     const inv = world.getInventoryCounts(bot);
+    // ingots left smelting in a furnace count as had: crafting fetches them (skills.collectBackgroundSmelt)
+    if (bot.background_smelt)
+        inv[bot.background_smelt.output] = (inv[bot.background_smelt.output] || 0) + bot.background_smelt.expected;
     const has = (name, n = 1) => (inv[name] || 0) >= n;
     const count = (name) => inv[name] || 0;
     const any = (...names) => names.some(n => has(n));
