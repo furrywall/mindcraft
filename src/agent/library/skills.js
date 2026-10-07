@@ -60,6 +60,9 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     // out of and it ran out of air. make water cost a lot more than walking. not too much though: at 20 the search
     // tried every land route before crossing a river, ran out of thinking time, and the bot stood still
     movements.liquidCost = 8;
+    // underground, water is flooded caves with no way up to breathe: two runs in a morning walked into one mining iron
+    // and drowned. there, dig round it (rivers up top still get crossed)
+    if (bot.entity.position.y < 50) movements.liquidCost = 40;
     if (getDimension(bot) === 'the_nether') {
         // two practice bots died in lava crossing the nether to look for a fortress (one dropped 16 blocks in 10
         // seconds on its way down to the lava sea). no jumping gaps, which out there are often over lava, and keep a
@@ -2709,6 +2712,9 @@ async function gotoWithWatchdog(bot, goal, noProgressMs=30000) {
     try {
         await bot.pathfinder.goto(goal);
     } catch (err) {
+        // a path search that ran out of time leaves its goal set, and the pathfinder goes on digging its way there:
+        // whatever digs next (a portal cast clearing its site) had its dig aborted, again and again
+        if (bot.pathfinder.goal === goal) bot.pathfinder.setGoal(null);
         if (gave_up) {
             const stuck = new Error(gave_up);
             stuck.name = 'NoProgress';
@@ -4714,7 +4720,13 @@ export async function speedrunNether(bot) {
                     if (bot.interrupt_code) return false;
                 }
             }
-            if (bot.entity.position.distanceTo(pool) > 24) {
+            // still well above or below it: dig our own way there. a practice bot stopped 20 blocks over a pool and set
+            // about a cast whose site was down at the lava, and got nowhere three times over
+            if (Math.abs(bot.entity.position.y - pool.y) > 8 && bot.entity.position.distanceTo(pool) <= 48) {
+                await tunnelTowards(bot, pool.offset(0, 3, 0), 64).catch(() => false);
+                if (bot.interrupt_code) return false;
+            }
+            if (bot.entity.position.distanceTo(pool) > 24 || Math.abs(bot.entity.position.y - pool.y) > 12) {
                 log(bot, `Couldn't get near the lava at ${pool}, trying another pool.`);
                 tried.push(pool);
                 continue;
