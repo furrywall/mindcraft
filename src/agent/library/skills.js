@@ -2962,6 +2962,19 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
 const TRAVEL_SEGMENT = 64;
 let _exploreAngle = null;
 
+async function healUp(bot, reason) {
+    /* Hurt and fed, wait to heal (up to a minute) before something risky: a live run set off for a lava pool 82
+       blocks away on 8 health, fell 10 blocks off a tower the server hadn't kept, and died of it. Food at 18 or more
+       heals a heart every few seconds. Returns once healed, hungry, attacked or interrupted. */
+    if (bot.health >= 14 || bot.food < 18) return;
+    log(bot, `Healing up before ${reason} (health ${Math.round(bot.health)}/20).`);
+    const start_health = bot.health;
+    for (let t = 0; t < 60 && bot.health < 18 && bot.food >= 18 && !bot.interrupt_code; t++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (bot.health < start_health - 2) return; // something's hurting us: the modes deal with that
+    }
+}
+
 export async function travelTo(bot, x, z, min_distance=8) {
     /**
      * Travel a long distance over land to the given x, z coordinates, in segments. Use this for trips of hundreds or thousands of blocks, where the y coordinate is unknown.
@@ -2982,6 +2995,7 @@ export async function travelTo(bot, x, z, min_distance=8) {
     }
     const start = bot.entity.position.clone();
     const dist = () => Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z);
+    if (dist() > 24) await healUp(bot, 'setting off');
     let failures = 0;
     while (dist() > min_distance) {
         if (bot.interrupt_code) return false;
@@ -4898,6 +4912,9 @@ export async function speedrunNether(bot) {
         const pool = await findLavaPool(bot, 128, tried);
         if (pool) {
             log(bot, `Lava pool at ${pool}, ${Math.round(bot.entity.position.distanceTo(pool))} blocks away.`);
+            // the way to a lava pool is drops, towers and the lava itself: not on half health
+            await healUp(bot, 'going to the lava');
+            if (bot.interrupt_code) return false;
             const level = Math.abs(bot.entity.position.y - pool.y) <= 16 &&
                 Math.hypot(bot.entity.position.x - pool.x, bot.entity.position.z - pool.z) <= 48;
             if (bot.entity.position.distanceTo(pool) > 16 && level) {
