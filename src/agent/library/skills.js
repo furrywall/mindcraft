@@ -4877,8 +4877,9 @@ export async function speedrunOpening(bot) {
         await collectBlock(bot, wood, 3);
         if (bot.interrupt_code) return false;
         // the rest only from the same tree: walking to the next one, the path search timed out twice on the server's
-        // old CPU and took 40 seconds for 1 log. the shield's planks can come later
-        if (logs() < 6 && world.getNearestBlock(bot, wood, 8)) await collectBlock(bot, wood, 6 - logs());
+        // old CPU and took 40 seconds for 1 log. 7 in all: with the sticks for the iron sword and torches as well, 6
+        // left a kit a plank short of the shield, down a mine with no trees
+        if (logs() < 7 && world.getNearestBlock(bot, wood, 8)) await collectBlock(bot, wood, 7 - logs());
         if (bot.interrupt_code) return false;
         // food while we're up here, from a couple of animals close by: down the mines there's none, and with nothing to
         // eat the bot's health stopped coming back (it only does at 18+ hunger) and it died to zombies in iron armor
