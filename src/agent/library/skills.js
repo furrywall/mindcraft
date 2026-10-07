@@ -4739,6 +4739,11 @@ async function approachWithoutDigging(bot, pos, range) {
     if (bot.entity.position.distanceTo(pos) <= range) return true;
     const movements = makeMovements(bot);
     movements.canDig = false;
+    // walking, not running or jumping gaps, and no drops: a live run walking to the lava it was going to scoop for
+    // its portal ran along the pool's edge into it
+    movements.allowSprinting = false;
+    movements.allowParkour = false;
+    movements.maxDropDown = 1;
     bot.pathfinder.setMovements(movements);
     const going = bot.pathfinder.goto(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range));
     going.catch(() => {}); // stopped below once we've given up on it
@@ -5324,6 +5329,10 @@ export async function castNetherPortal(bot) {
                 if (bot.entity.position.distanceTo(p) > 3.5) {
                     const movements = makeMovements(bot);
                     movements.canDig = false;
+                    // walking, not running or jumping gaps, and no drops (see approachWithoutDigging)
+                    movements.allowSprinting = false;
+                    movements.allowParkour = false;
+                    movements.maxDropDown = 1;
                     bot.pathfinder.setMovements(movements);
                     // the pathfinder on its own never gives up on a path it can't follow: a practice cast stood
                     // "moving" on one spot for minutes. 20 seconds, then the next lava
