@@ -143,6 +143,14 @@ const modes_list = [
                     }
                 });
             }
+            else if (bot.blockAt(bot.entity.position.offset(0, -0.2, 0))?.name === 'magma_block') {
+                // a heart a second while we stand on it: a practice bot died on the nether's magma ("discovered the
+                // floor was lava"). paths keep off it, so this is standing still on one, fighting or waiting
+                say(agent, 'Standing on magma!');
+                execute(this, agent, async () => {
+                    await skills.moveAway(bot, 3);
+                });
+            }
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
                 say(agent, 'I\'m dying!');
                 execute(this, agent, async () => {
