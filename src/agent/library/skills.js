@@ -4554,7 +4554,9 @@ export async function speedrunKit(bot) {
     // all three are made
     const want_sword = !has('iron_sword', 'diamond_sword', 'netherite_sword');
     const want_shield = !has('shield');
-    const want_chestplate = !has('iron_chestplate', 'diamond_chestplate', 'netherite_chestplate');
+    // the chestplate is 8 of the kit's 18 iron, a minute or two of mining: on easy (runs are, since) the sword and
+    // shield see the mines through, so only get it when going on past the nether
+    const want_chestplate = !netherOnly && !has('iron_chestplate', 'diamond_chestplate', 'netherite_chestplate');
     const buckets = () => count('bucket') + count('water_bucket') + count('lava_bucket');
     const want_buckets = Math.max(0, 2 - buckets());
     const want_flint_and_steel = !has('flint_and_steel', 'fire_charge');
@@ -4675,7 +4677,7 @@ export async function speedrunKit(bot) {
         log(bot, `The kit still needs: ${missing.join('; ')}. Carry on with !gameProgress.`);
         return false;
     }
-    log(bot, `Kit done: iron sword, shield, iron chestplate, 2 buckets, flint_and_steel and golden boots. Next step: !gameProgress.`);
+    log(bot, `Kit done: iron sword, shield, ${netherOnly ? '' : 'iron chestplate, '}2 buckets, flint_and_steel${netherOnly ? '' : ' and golden boots'}. Next step: !gameProgress.`);
     return true;
 }
 
