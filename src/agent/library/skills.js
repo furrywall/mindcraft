@@ -4993,10 +4993,12 @@ export async function speedrunOpening(bot) {
         const logs = () => Object.entries(world.getInventoryCounts(bot)).reduce((n, [name, c]) => n + (name.endsWith('_log') ? c : 0), 0);
         await collectBlock(bot, wood, 3);
         if (bot.interrupt_code) return false;
-        // the rest only from the same tree: walking to the next one, the path search timed out twice on the server's
-        // old CPU and took 40 seconds for 1 log. 7 in all: with the sticks for the iron sword and torches as well, 6
-        // left a kit a plank short of the shield, down a mine with no trees
-        if (logs() < 7 && world.getNearestBlock(bot, wood, 8)) await collectBlock(bot, wood, 7 - logs());
+        // 7 in all: with the sticks for the iron sword and torches as well, 6 left a kit a plank short of the shield,
+        // down a mine with no trees. from the next tree too if need be, if it's close: only the same tree's (within 8)
+        // was from when paths were planned on the server's old CPU, and a practice opening left a 3-log tree with 3,
+        // and the kit then had no wood for the shield or the sword's stick
+        const more_wood = world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 20, 1)[0]?.name;
+        if (logs() < 7 && more_wood) await collectBlock(bot, more_wood, 7 - logs());
         if (bot.interrupt_code) return false;
         // food while we're up here, from a couple of animals close by: down the mines there's none, and with nothing to
         // eat the bot's health stopped coming back (it only does at 18+ hunger) and it died to zombies in iron armor
