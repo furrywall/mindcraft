@@ -466,6 +466,13 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
         await resyncInventory(bot);
     }
 
+    // nothing to show for it even after trying again: say so, so callers don't carry on as if they had it. an opening
+    // went on to smelt with a furnace that never turned up (its cobblestone gone), and stopped there
+    if ((world.getInventoryCounts(bot)[itemName] || 0) <= had) {
+        log(bot, `Crafting ${itemName} made nothing.`);
+        if (placedTable) await putTableAway(bot, craftingTable);
+        return false;
+    }
     if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} to craft ${num}, crafted ${craftLimit.num}. You now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     else log(bot, `Successfully crafted ${itemName}, you now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     if (placedTable) {
@@ -5044,12 +5051,15 @@ export async function speedrunOpening(bot) {
             if (bot.interrupt_code) return null;
             if (!(await craft('stone_sword'))) return 'the stone sword';
         }
-        // the furnace's 8, mined faster now with the stone pickaxe
-        if (count('furnace') === 0 && !world.getNearestBlock(bot, 'furnace', 16)) {
+        // the furnace's 8, mined faster now with the stone pickaxe. twice if it has to: a furnace craft can take the
+        // cobblestone and leave nothing to show for it
+        for (let t = 0; t < 2 && count('furnace') === 0 && !world.getNearestBlock(bot, 'furnace', 16); t++) {
             await ensureCobble(8);
             if (bot.interrupt_code) return null;
-            if (!(await craft('furnace'))) return 'the furnace';
+            await craft('furnace');
+            if (bot.interrupt_code) return null;
         }
+        if (count('furnace') === 0 && !world.getNearestBlock(bot, 'furnace', 16)) return 'the furnace';
         return null;
     });
     if (bot.interrupt_code) return false;
