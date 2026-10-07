@@ -1160,8 +1160,9 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
             }
 
             // flyers hover out of reach over the drops: chasing a blaze walked a practice bot off a fortress bridge.
-            // hold our ground, shield up, and hit them when they come close
-            if (FLYING_MOBS.includes(entity.name)) setMode(null);
+            // hold our ground, shield up, and only step in on one that's close and low (a blaze's just spawned by
+            // the spawner, before it rises): holding still, a practice bot never hit one
+            if (FLYING_MOBS.includes(entity.name) && !(dist < 6 && entity.position.y - bot.entity.position.y < 2.5)) setMode(null);
             else setMode('chase');
             if (swing_ready) {
                 // critical hit: attack while falling after a jump. skip it in water/when the target is right on top of us
@@ -7077,9 +7078,10 @@ export async function collectBlazeRods(bot, num=7) {
         }
         const spawner = world.getNearestBlock(bot, 'spawner', 64);
         if (spawner) {
-            // camp a few blocks from the spawner, blazes appear around it
-            if (bot.entity.position.distanceTo(spawner.position) > 8) {
-                await goToPosition(bot, spawner.position.x, spawner.position.y, spawner.position.z, 5);
+            // camp right by the spawner: blazes appear around it at our level and only rise after, and from 5 blocks
+            // off they were all out of reach
+            if (bot.entity.position.distanceTo(spawner.position) > 3.5) {
+                await goToPosition(bot, spawner.position.x, spawner.position.y, spawner.position.z, 2);
             }
             waiting_since = waiting_since ?? Date.now();
             // torches by the spawner keep blazes from spawning (one put down earlier, when it was dark here)
