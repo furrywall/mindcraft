@@ -319,6 +319,9 @@ const modes_list = [
             if (t < 12800 || t >= 23000) return;
             if (Date.now() - this.last_try < 30000) return;
             if (bot.entity.isInWater) return; // self preservation gets us out of water first
+            // not in the middle of a scripted stretch of a speedrun (on easy, with a sword): the nether stage goes up
+            // for water, and a run went up, got dug in, went up again and got dug in again, four times over
+            if (agent.actions.currentActionLabel?.startsWith('action:speedrun')) return;
             // already under cover? (the sky light read at our own head was 0 out in the open, so this never dug in)
             if (!world.isOpenToSky(bot, bot.entity.position)) return;
             this.last_try = Date.now();
