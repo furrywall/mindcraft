@@ -80,7 +80,9 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     const air = bot.registry.blocksByName.air.id, cave_air = bot.registry.blocksByName.cave_air?.id;
     const isAir = (p) => { const b = bot.world.getBlockStateId(p); return b === 0 || bot.registry.blocksByStateId[b]?.id === air || bot.registry.blocksByStateId[b]?.id === cave_air; };
     movements.exclusionAreasStep.push(block => {
-        const p = block.position;
+        // blocks in chunks not loaded yet come without a position (it crashed the agent from inside the path search)
+        const p = block?.position;
+        if (!p) return 0;
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
             if (isLava(p.offset(dx, 0, dz)) || isLava(p.offset(dx, -1, dz))) return nether ? 20 : 12;
             // in the nether, the edge of a drop into lava: a practice bot walking at y=40 went over one and fell 10
