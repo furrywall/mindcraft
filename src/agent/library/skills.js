@@ -7067,6 +7067,12 @@ export async function collectBlazeRods(bot, num=7) {
                 await goToPosition(bot, spawner.position.x, spawner.position.y, spawner.position.z, 5);
             }
             waiting_since = waiting_since ?? Date.now();
+            // torches by the spawner keep blazes from spawning (one put down earlier, when it was dark here)
+            for (const torch of world.getNearestBlocksWhere(bot, b => b.name === 'torch' || b.name === 'wall_torch', 12, 8)) {
+                if (bot.interrupt_code) return false;
+                if (torch.position.distanceTo(spawner.position) <= 10)
+                    await breakBlockAt(bot, torch.position.x, torch.position.y, torch.position.z).catch(() => {});
+            }
             if (Date.now() - waiting_since > 90000) {
                 log(bot, `No blazes have spawned in a while. The spawner may be blocked, or lit up by torches.`);
                 return false;
