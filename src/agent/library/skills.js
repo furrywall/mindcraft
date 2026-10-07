@@ -5104,6 +5104,30 @@ export async function speedrunOpening(bot) {
         if (!(await craft('iron_pickaxe'))) return stop('the iron pickaxe');
         log(bot, `Iron pickaxe at ${at()} into the opening.`);
     }
+    // the portal cast's water now, while we're still near the surface and it's day: from the depths at the end of the
+    // kit, the nether stage climbed all the way up for water and back down for lava, minutes of it that looked stuck,
+    // and often at nightfall. a bucket from the iron grabbed on the way (it counts towards the kit's two), filled at
+    // the nearest water we can walk to, or up top if we're not deep. none of it is needed: the nether stage gets
+    // water itself if this doesn't
+    const buckets = () => count('bucket') + count('water_bucket') + count('lava_bucket');
+    if (buckets() === 0 && count('raw_iron') + count('iron_ingot') >= 3 && bot.entity.position.y > 30) {
+        if (count('iron_ingot') < 3)
+            await smeltItem(bot, 'raw_iron', Math.min(count('raw_iron'), 3 - count('iron_ingot')));
+        if (bot.interrupt_code) return false;
+        if (count('iron_ingot') >= 3 && await craft('bucket')) {
+            if (bot.interrupt_code) return false;
+            if (!(await fillWaterSafely(bot, 48)) && !bot.interrupt_code) {
+                if (!world.isOpenToSky(bot, bot.entity.position)) await goToSurface(bot);
+                const water = !bot.interrupt_code && surfaceWater(bot, 96);
+                if (water) {
+                    await travelTo(bot, water.position.x, water.position.z, 3);
+                    if (!bot.interrupt_code) await fillWaterSafely(bot, 16);
+                }
+            }
+            if (bot.interrupt_code) return false;
+            if (count('water_bucket')) log(bot, `Filled a bucket with water for the portal at ${at()}.`);
+        }
+    }
     const fuel_left = count('coal') + count('charcoal');
     log(bot, `Opening done in ${at()}: iron pickaxe, stone sword and a furnace${fuel_left > 0 ? `, with ${fuel_left} coal for smelting` : ''}. Next step: !gameProgress.`);
     return true;
