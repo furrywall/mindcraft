@@ -5001,6 +5001,10 @@ export async function speedrunOpening(bot) {
             await collectBlock(bot, 'stone', n - cobble());
     };
     const craft = (item) => craftPersistently(bot, item);
+    const findWood = () => world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+    const logs = () => Object.entries(world.getInventoryCounts(bot)).reduce((n, [name, c]) => n + (name.endsWith('_log') ? c : 0), 0);
+    const spareWoodValue = () => Object.entries(world.getInventoryCounts(bot)).reduce((n, [name, c]) =>
+        n + (name.endsWith('_planks') ? c : (name.endsWith('_log') ? c * 4 : 0)), 0);
 
     if (!any('wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe')) {
         // 6 logs are 24 planks: 11 for the table, wooden pickaxe and all the sticks up to the iron pickaxe, 2 to smelt
