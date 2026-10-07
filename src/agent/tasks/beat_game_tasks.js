@@ -2,6 +2,7 @@
 // through the exit portal in the end. That portal only opens once the ender dragon is dead.
 // Until then the score is how far along the way to the dragon the bot got, so a run that times out still shows its progress.
 // Each milestone also prints a speedrun split: how long after the task started the bot got there.
+import { readFileSync, writeFileSync } from 'fs';
 
 // in order. reaching a milestone counts all the ones before it as reached too (no need for a pickaxe once you hold 12 eyes)
 const MILESTONES = [
@@ -14,6 +15,30 @@ const MILESTONES = [
     {name: 'killed the ender dragon', reached: (s) => s.dragonDead()},
     {name: 'credits', reached: (s) => s.credits},
 ];
+
+// the best time for each split over all runs (in seconds), so each split says how far ahead or behind it is
+const BEST_SPLITS_FILE = process.env.MINDCRAFT_BEST_SPLITS || './bots/speedrun_best_splits.json';
+
+function readBestSplits() {
+    try {
+        return JSON.parse(readFileSync(BEST_SPLITS_FILE, 'utf8'));
+    } catch (err) {
+        return {};
+    }
+}
+
+function writeBestSplits(best) {
+    try {
+        writeFileSync(BEST_SPLITS_FILE, JSON.stringify(best, null, 4));
+    } catch (err) {
+        console.warn(`Couldn't save the best splits to ${BEST_SPLITS_FILE}: ${err.message}`);
+    }
+}
+
+function formatGap(secs) {
+    const s = Math.abs(secs);
+    return `${secs < 0 ? '-' : '+'}${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 function formatTime(ms) {
     const s = Math.floor(ms / 1000);
@@ -61,10 +86,20 @@ export class BeatGameTaskValidator {
     reachedMilestone(i) {
         // milestones skipped on the way (like a pickaxe when starting with eyes of ender) get the same time
         const time = formatTime(Date.now() - this.start_time);
+        const secs = Math.floor((Date.now() - this.start_time) / 1000);
+        const best = readBestSplits();
         for (let j = this.progress; j <= i; j++) {
             this.splits.push(time);
-            console.log(`Speedrun split ${j + 1}/${MILESTONES.length}: ${MILESTONES[j].name} at ${time}`);
+            // how far ahead or behind the best time for this split, like a timing board
+            const name = MILESTONES[j].name;
+            let gap = ' (first time)';
+            if (best[name] !== undefined)
+                gap = ` (${formatGap(secs - best[name])} vs best ${formatTime(best[name] * 1000)}${secs < best[name] ? ', NEW BEST' : ''})`;
+            if (best[name] === undefined || secs < best[name])
+                best[name] = secs;
+            console.log(`Speedrun split ${j + 1}/${MILESTONES.length}: ${name} at ${time}${gap}`);
         }
+        writeBestSplits(best);
         this.progress = i + 1;
         if (this.progress === MILESTONES.length) {
             console.log(`Beat the game in ${time}! Splits:`);

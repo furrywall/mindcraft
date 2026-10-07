@@ -415,6 +415,16 @@ export class Agent {
                         this.routeResponse(source, pre_message);
                 }
 
+                // a scripted stretch of a speedrun is running (the self-prompter's autopilot started it): a reply the
+                // model had started before it (to a restart, or a mode's message) cut a kit short to smelt 2 iron by
+                // hand, and the model's own !speedrunKit restarted it. let it finish
+                if (isAction(command_name) && command_name !== '!stop' && this.actions.executing &&
+                        this.actions.currentActionLabel?.startsWith('action:speedrun')) {
+                    const busy = this.actions.currentActionLabel.substring('action:'.length);
+                    console.log(`Skipped ${command_name}: !${busy} is running.`);
+                    this.history.add('system', `${command_name} wasn't run: !${busy} is doing the next step right now. Let it finish.`);
+                    break;
+                }
                 let execute_res = await executeCommand(this, res);
 
                 console.log('Agent executed:', command_name, 'and got:', execute_res);

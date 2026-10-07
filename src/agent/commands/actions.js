@@ -29,6 +29,34 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
     return wrappedAction;
 }
 
+// the scripted stretches of a speedrun (!speedrunOpening, !speedrunKit, !speedrunNether): an error partway (a dig
+// aborted when a block shifted) ended one with nothing to show, though each picks up from what's done. try again a
+// couple of times; an interrupt still stops it, and it resumes once the mode that cut in is done
+async function playStage(agent, stage) {
+    const protectUnstuck = stage.name === 'speedrunKit';
+    if (protectUnstuck) agent.bot.modes.pause('unstuck');
+    try {
+        for (let tries = 0; tries < 3; tries++) {
+            try {
+                await stage(agent.bot);
+                break;
+            } catch (err) {
+                if (agent.bot.interrupt_code || tries === 2) throw err;
+                skills.log(agent.bot, `Hit an error (${err.message}), carrying on from where it got to.`);
+            }
+        }
+    } finally {
+        if (protectUnstuck) agent.bot.modes.unpause('unstuck');
+        // done, stopped at a step it couldn't do, or failed: the model takes it from here, so don't run it again (an
+        // interrupt is different: it resumes once the mode that cut in is done)
+        if (!agent.bot.interrupt_code) {
+            agent.actions.cancelResume();
+            // when it ended: the checklist (and the self-prompter's autopilot) send it back here only after a while
+            agent.bot.stage_tries = {...agent.bot.stage_tries, [stage.name]: Date.now()};
+        }
+    }
+}
+
 export const actionsList = [
     {
         name: '!newAction',
@@ -250,6 +278,12 @@ export const actionsList = [
             'num': { type: 'int', description: 'The number of items to discard.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, item_name, num) => {
+            // told the furnace wouldn't go down in a mine shaft, the model threw away its only furnace, twice
+            const needed = ['furnace', 'crafting_table', 'shield', 'bucket', 'water_bucket', 'lava_bucket', 'flint_and_steel', 'bow', 'ender_eye', 'ender_pearl', 'blaze_rod'];
+            if (needed.includes(item_name) || /_(pickaxe|sword)$/.test(item_name)) {
+                skills.log(agent.bot, `Keep your ${item_name}: the run still needs it. Only discard things you have spare, like dirt or extra cobblestone.`);
+                return;
+            }
             const start_loc = agent.bot.entity.position;
             await skills.moveAway(agent.bot, 5);
             await skills.discard(agent.bot, item_name, num);
@@ -264,6 +298,15 @@ export const actionsList = [
             'num': { type: 'int', description: 'The number of blocks to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, type, num) => {
+            // in a speedrun the model asked for 64 and 50 iron_ore and 20 gold_ore, minutes of mining each, when the
+            // whole run takes about 21 iron (12 at most at once, for the sword, shield and chestplate), 4 gold and a
+            // few coal
+            const ore = type.replace(/^deepslate_/, '').replace(/^raw_/, '').replace(/_ore$/, '');
+            const most = agent.task?.task_type === 'beat_game' ? {iron: 12, gold: 4, coal: 8}[ore] : undefined;
+            if (most && num > most) {
+                skills.log(agent.bot, `Collecting ${most} ${type}, not ${num}: that's as much as the run needs at once.`);
+                num = most;
+            }
             await skills.collectBlock(agent.bot, type, num);
         }, false, 10) // 10 minute timeout
     },
@@ -537,6 +580,30 @@ export const actionsList = [
         perform: runAsAction(async (agent) => {
             await skills.buildNetherPortal(agent.bot);
         })
+    },
+    {
+        name: '!speedrunOpening',
+        description: 'Play the speedrun opening in one go without stopping: logs, wooden pickaxe, stone pickaxe, stone sword, furnace, then 3 iron (and coal, if any is close) smelted into an iron pickaxe. Stops at the first step that fails. Use it at the start of a run.',
+        // resumed after a mode cuts in (digging out of fallen gravel ended one 2 minutes in): it skips the steps done
+        perform: runAsAction(async (agent) => {
+            await playStage(agent, skills.speedrunOpening);
+        }, true)
+    },
+    {
+        name: '!speedrunKit',
+        description: 'Once you have an iron pickaxe, get everything for the nether in one go: mines the iron, gold, gravel and coal in one trip, then makes an iron sword, a shield, an iron chestplate (worn), 2 buckets, flint_and_steel and golden boots (worn). Stops at the first step that fails.',
+        // resumed after a mode cuts in, like the opening: it skips what's done
+        perform: runAsAction(async (agent) => {
+            await playStage(agent, skills.speedrunKit);
+        }, true)
+    },
+    {
+        name: '!speedrunNether',
+        description: 'Once you have the portal kit (2 buckets, flint_and_steel, ~36 cobblestone), get into the nether in one go: fills the water bucket, finds a lava pool (digging down or exploring if there is none in sight), casts a nether portal next to it and goes through.',
+        // resumed after a mode cuts in, like the opening
+        perform: runAsAction(async (agent) => {
+            await playStage(agent, skills.speedrunNether);
+        }, true)
     },
     {
         name: '!castNetherPortal',

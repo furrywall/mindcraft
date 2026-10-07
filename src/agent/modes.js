@@ -88,9 +88,16 @@ const modes_list = [
             else if (block.name === 'lava' || block.name === 'fire' ||
                 blockAbove.name === 'lava' || blockAbove.name === 'fire') {
                 say(agent, 'I\'m on fire!');
-                // if you have a water bucket, use it
+                // if you have a water bucket, use it. not in the nether, where water boils away at once: pouring it
+                // there used up the seconds a practice bot needed to get out of the lava, and it burned to death
                 let waterBucket = bot.inventory.findInventoryItem('water_bucket');
-                if (waterBucket) {
+                const nether = (bot.game.dimension || '').includes('nether');
+                if (nether) {
+                    execute(this, agent, async () => {
+                        await skills.moveAway(bot, 5);
+                    });
+                }
+                else if (waterBucket) {
                     execute(this, agent, async () => {
                         let success = await skills.placeBlock(bot, 'water_bucket', block.position.x, block.position.y, block.position.z);
                         if (success) say(agent, 'Placed some water, ahhhh that\'s better!');
@@ -108,8 +115,13 @@ const modes_list = [
                         if (nearestWater) {
                             const pos = nearestWater.position;
                             let success = await skills.goToPosition(bot, pos.x, pos.y, pos.z, 0.2);
-                            if (success) say(agent, 'Found some water, ahhhh that\'s better!');
-                            return;
+                            // water at a lava pool's edge can't always be reached, or doesn't get us out: heading
+                            // for the same water 7 times over, the bot burned to death 2 blocks from it
+                            const burning = (b) => b?.name === 'lava' || b?.name === 'fire';
+                            if (success && !burning(bot.blockAt(bot.entity.position)) && !burning(bot.blockAt(bot.entity.position.offset(0, 1, 0)))) {
+                                say(agent, 'Found some water, ahhhh that\'s better!');
+                                return;
+                            }
                         }
                         await skills.moveAway(bot, 5);
                     });
@@ -283,8 +295,8 @@ const modes_list = [
             if (t < 12800 || t >= 23000) return;
             if (Date.now() - this.last_try < 30000) return;
             if (bot.entity.isInWater) return; // self preservation gets us out of water first
-            const head = bot.blockAt(bot.entity.position.offset(0, 1, 0));
-            if (!head || head.skyLight < 8) return; // already under cover
+            // already under cover? (the sky light read at our own head was 0 out in the open, so this never dug in)
+            if (!world.isOpenToSky(bot, bot.entity.position)) return;
             this.last_try = Date.now();
             say(agent, 'Night is falling, digging in until morning.');
             execute(this, agent, async () => {

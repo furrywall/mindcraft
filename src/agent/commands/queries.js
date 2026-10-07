@@ -354,6 +354,13 @@ export const queryList = [
     },
 ];
 
+export function getScriptedStage(bot) {
+    // the scripted stretch of a speedrun (speedrunOpening, speedrunKit or speedrunNether) that the next step is, if any
+    // and it hasn't just stopped short: told to use it, the model still mined iron and gold by hand for 10 minutes
+    getGameProgress(bot);
+    return bot.next_stage;
+}
+
 export function getNextStepHint(bot) {
     // the next step (and food note) from !gameProgress, added to command results so the model doesn't have to spend
     // a turn on !gameProgress after every command
@@ -458,11 +465,18 @@ function getGameProgress(bot) {
                 const iron_needed = (have_shield ? 0 : 1) + (have_sword ? 0 : 2) + (armor.length < 1 ? 8 : 0);
                 const iron_have = count('iron_ingot') + count('raw_iron');
                 const owned = [have_shield && 'a shield', have_sword && 'an iron_sword'].filter(Boolean);
+                // fuel for the iron still to smelt: with no coal, smelting burned the wood the shield and sticks need
+                const to_smelt = count('raw_iron') + Math.max(0, iron_needed - iron_have);
+                const coal_smelts = 8 * (count('coal') + count('charcoal')) + 80 * count('coal_block');
+                const coal_note = to_smelt > coal_smelts
+                    ? ` Mine ${Math.ceil((to_smelt - coal_smelts) / 8)} coal_ore too, for fuel (each smelts 8): keep your wood for the shield and sticks.`
+                    : '';
                 return (owned.length ? `You already have ${owned.join(' and ')}: don't craft another. ` : '') +
                     `Still need ${todo.join(', ')}. ` +
                     (iron_have >= iron_needed
                         ? `You have enough iron (${iron_have}): ${count('raw_iron') > 0 ? 'smelt the raw_iron and ' : ''}craft them.`
-                        : `That takes ${iron_needed} iron and you have ${iron_have}: mine ${iron_needed - iron_have} more iron_ore in one trip, then smelt it all at once.`);
+                        : `That takes ${iron_needed} iron and you have ${iron_have}: mine ${iron_needed - iron_have} more iron_ore in one trip, then smelt it all at once.`) +
+                    coal_note;
             })()},
         // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
         {done: portal_kit.length === 0 || (portal_near && geared && has_gold_armor) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone, golden boots)',
@@ -502,11 +516,13 @@ function getGameProgress(bot) {
     const night = bot.time.timeOfDay >= 13000 && bot.time.timeOfDay < 23000;
     const has_sword = any('stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword');
     let survival = null;
+    let night_note = null; // underground at night, where the scripted stretches still work
     // things worth mining while sheltering underground at night, by how far along we are
     const next_underground = !steps[1].done ? '!collectBlocks("iron_ore", 3) for the iron_pickaxe, and some coal_ore'
         : !steps[3].done ? 'iron_ore, gold_ore (for golden boots), coal_ore and gravel (for flint), and look for lava to cast the portal'
         : 'coal_ore and cobblestone';
-    const on_surface = bot.blockAt(bot.entity.position)?.skyLight > 7;
+    // the blocks above, not the sky light at our feet: that read 0 out in the open, so the bot always seemed underground
+    const on_surface = world.isOpenToSky(bot, bot.entity.position);
     // food only comes first when it's actually needed: getting hungry, or hurt with nothing to eat. sending a well-fed
     // bot off to find cows wasted minutes exploring, and pulled it through water
     const need_food = food < 4 && (bot.food <= 12 || (bot.health < 14 && bot.food < 18));
@@ -519,6 +535,7 @@ function getGameProgress(bot) {
     else if (dimension === 'overworld' && night && !on_surface) {
         // the night_shelter mode digs the bot in at dusk; keep it below ground doing what can be done there
         const mins = Math.ceil((24000 - bot.time.timeOfDay) / 20 / 60);
+        night_note = `It's night (about ${mins} more minutes): stay underground, don't go up to the surface. `;
         survival = `It's night (about ${mins} more minutes): stay underground, don't go up to the surface. ` +
             (!has_sword && steps[0].done ? 'Craft a stone_sword first (2 cobblestone, 1 stick). ' : '') +
             `Meanwhile do the next step if it can be done down here, or mine what you'll need: ${next_underground}.`;
@@ -543,7 +560,24 @@ function getGameProgress(bot) {
     }
     // once in the end, the dragon is the only thing that matters
     const next = dimension === 'the_end' ? steps[steps.length - 1] : steps.find(s => !s.done);
-    res += `\nNext step: ${survival || next.next}`;
+    // the scripted stretches do these steps without a turn per craft (after a death, or one that stopped early). given
+    // the steps by hand as well, the model followed those instead (searching for iron 7 at a time), so they only show
+    // when the scripted one has just been tried and stopped short
+    const stage = dimension !== 'overworld' ? null
+        : next === steps[0] || next === steps[1] ? ['speedrunOpening', 'Use !speedrunOpening now: it gets the wood, stone tools, furnace and iron pickaxe in one go.']
+        // with the buckets and flint_and_steel, !speedrunNether fills the water and gets the cobblestone itself: told to
+        // finish the kit first, the model went looking for lava step by step
+        : (next === steps[3] || next === steps[4]) && !portal_near && buckets >= 2 && any('flint_and_steel', 'fire_charge')
+            ? ['speedrunNether', 'Use !speedrunNether now: it fills the water bucket, finds a lava pool, casts the portal and goes through, all in one go.']
+        : next === steps[2] || next === steps[3] ? ['speedrunKit', 'Use !speedrunKit now: it mines the iron, gold and gravel and makes the sword, shield, chestplate, buckets and flint_and_steel in one go.']
+        : null;
+    const tried = stage && Date.now() - (bot.stage_tries?.[stage[0]] || 0) < 3 * 60000;
+    const step = !stage ? next.next : tried ? `!${stage[0]} stopped short just now, so by hand: ${next.next}` : stage[1];
+    // at night underground the scripted stretches still work (they mine down there): told to mine what it'll need
+    // instead, the model mined iron and gold by hand, a few at a time
+    const use_stage = stage && !tried && (!survival || night_note);
+    res += `\nNext step: ${use_stage ? (night_note || '') + stage[1] : survival || step}`;
+    bot.next_stage = use_stage ? stage[0] : null; // for the self-prompter, which runs it without asking (getScriptedStage)
     if (!survival && food < 4 && dimension === 'overworld')
         res += '\nFood: kill animals you pass on the way (cow, pig, sheep) and cook the meat, but don\'t go searching for them.';
     res += '\nGather everything a step needs in one trip and craft it together, instead of going back for more of the same thing.';

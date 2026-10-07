@@ -53,6 +53,9 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     if (placeCost !== null) movements.placeCost = placeCost;
     // falling more than 3 blocks hurts; allow more only when we're healthy
     movements.maxDropDown = bot.health > 14 ? 4 : 3;
+    // and the same into water: by default the pathfinder takes any drop that lands in water, however high, and a
+    // practice bot walking to a lake across a mountainside fell to its death
+    movements.infiniteLiquidDropdownDistance = false;
     // swimming is barely more than walking by default, so paths dove through flooded caves the bot can't climb back
     // out of and it ran out of air. make water cost a lot more than walking. not too much though: at 20 the search
     // tried every land route before crossing a river, ran out of thinking time, and the bot stood still
@@ -135,6 +138,36 @@ async function resyncInventory(bot) {
     }
 }
 
+async function placeNearby(bot, blockType, range) {
+    /* Put down a crafting table or furnace from the inventory, and return it as placed (null if it wouldn't go down).
+       The nearest free space doesn't always take a block (underground it failed for both), so also try the spaces
+       right around us. */
+    const here = bot.entity.position.floored();
+    const spots = [world.getNearestFreeSpace(bot, 1, 6), ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => here.offset(dx, 0, dz))];
+    for (const pos of spots) {
+        if (bot.interrupt_code) return null;
+        if (!pos || bot.blockAt(pos)?.boundingBox !== 'empty' || bot.blockAt(pos.offset(0, -1, 0))?.boundingBox !== 'block') continue;
+        await placeBlock(bot, blockType, pos.x, pos.y, pos.z);
+        const placed = world.getNearestBlock(bot, blockType, range);
+        if (placed) return placed;
+    }
+    // down a 1-block mine shaft there's no free space with a floor: dig a wall block out at our feet and put it in
+    // the gap, unless that opens onto lava or water
+    const liquid = (pos) => ['lava', 'water'].includes(bot.blockAt(pos)?.name);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        if (bot.interrupt_code) return null;
+        const pos = here.offset(dx, 0, dz);
+        const block = bot.blockAt(pos);
+        if (!block || block.boundingBox !== 'block' || !block.diggable || bot.blockAt(pos.offset(0, -1, 0))?.boundingBox !== 'block') continue;
+        if ([pos.offset(dx, 0, dz), pos.offset(0, 1, 0), pos.offset(dz, 0, dx), pos.offset(-dz, 0, -dx)].some(liquid)) continue;
+        if (!(await breakBlockAt(bot, pos.x, pos.y, pos.z))) continue;
+        await placeBlock(bot, blockType, pos.x, pos.y, pos.z);
+        const placed = world.getNearestBlock(bot, blockType, range);
+        if (placed) return placed;
+    }
+    return null;
+}
+
 async function craftMissingIngredients(bot, itemName, num, depth) {
     /* Craft the planks and sticks a recipe needs from what we carry. Getting a wooden pickaxe took a round trip to the
        model for each of planks, sticks, the table and the pickaxe, plus failed tries in between. */
@@ -204,6 +237,10 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
         log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
         return false;
     }
+    // start from the server's copy of the inventory, with nothing left in the 2x2 grid: with a stale copy, crafting
+    // planks put a plank in the grid where a log should go, and the server made a spruce_button out of it
+    if (_depth === 0)
+        await resyncInventory(bot);
     if (_depth < 2)
         await craftMissingIngredients(bot, itemName, num, _depth);
 
@@ -221,19 +258,19 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
 
             // Try to place crafting table, crafting one first if we can
             let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
-            if (!hasTable && _depth < 2)
-                hasTable = await craftRecipe(bot, 'crafting_table', 1, _depth + 1) && world.getInventoryCounts(bot)['crafting_table'] > 0;
-            if (hasTable) {
-                // the nearest free space doesn't always take a block (underground it failed), so also try the spaces
-                // right around us. crafting without a table throws, and the model was shown the whole recipe
-                const here = bot.entity.position.floored();
-                const spots = [world.getNearestFreeSpace(bot, 1, 6), ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => here.offset(dx, 0, dz))];
-                for (const pos of spots) {
-                    if (!pos || bot.blockAt(pos)?.boundingBox !== 'empty' || bot.blockAt(pos.offset(0, -1, 0))?.boundingBox !== 'block') continue;
-                    await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
-                    craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
-                    if (craftingTable) break;
+            if (!hasTable && _depth < 2) {
+                hasTable = await craftRecipe(bot, 'crafting_table', 1, _depth + 1);
+                // the table just crafted in the 2x2 grid can take a moment to show up ("you now have undefined
+                // crafting_table"): giving up there cost the model a turn, or another table's 4 planks
+                for (let i = 0; hasTable && !(world.getInventoryCounts(bot)['crafting_table'] > 0) && i < 3 && !bot.interrupt_code; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    await resyncInventory(bot);
                 }
+                hasTable = hasTable && world.getInventoryCounts(bot)['crafting_table'] > 0;
+            }
+            if (hasTable) {
+                // crafting without a table throws, and the model was shown the whole recipe
+                craftingTable = await placeNearby(bot, 'crafting_table', craftingTableRange);
                 if (!craftingTable) {
                     log(bot, `Couldn't place a crafting table to craft ${itemName}. Move to a more open spot and try again.`);
                     return false;
@@ -269,6 +306,26 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
     
     if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4) {
         await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
+    }
+    if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4.5 && !bot.interrupt_code) {
+        // a table we can't get to (up a cliff, across a ravine) left a craft waiting 20 seconds for its window, then
+        // failing: put another one down here instead
+        let have = world.getInventoryCounts(bot)['crafting_table'] > 0;
+        if (!have && _depth < 2)
+            have = await craftRecipe(bot, 'crafting_table', 1, _depth + 1) && world.getInventoryCounts(bot)['crafting_table'] > 0;
+        const here = have ? await placeNearby(bot, 'crafting_table', 4) : null;
+        if (!here) {
+            log(bot, `Can't reach the crafting table at ${craftingTable.position} to craft ${itemName}, and couldn't put down another.`);
+            return false;
+        }
+        craftingTable = here;
+        recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
+        placedTable = true;
+        if (!recipes || recipes.length === 0) {
+            log(bot, `You do not have the resources to craft ${itemName}.`);
+            await collectBlock(bot, 'crafting_table', 1);
+            return false;
+        }
     }
 
     const recipe = recipes[0];
@@ -312,6 +369,18 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
     // mineflayer resyncs after crafting at a table but not in the inventory grid, where its last click can leave the inventory wrong
     if (!craftingTable)
         await resyncInventory(bot);
+    // a 2x2 craft the server didn't take makes nothing and gives the ingredients back: sticks came out "undefined" (the
+    // planks went 4 -> 8 after the next craft) and the wooden pickaxe after them failed. once more usually works
+    if (!craftingTable && (world.getInventoryCounts(bot)[itemName] || 0) <= had && !bot.interrupt_code) {
+        console.log(`Crafting ${itemName} made nothing, trying again.`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        try {
+            await bot.craft(recipe, craftNum, craftingTable);
+        } catch (err) {
+            console.log(`Crafting ${itemName} again failed: ${err.message}`);
+        }
+        await resyncInventory(bot);
+    }
 
     if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} to craft ${num}, crafted ${craftLimit.num}. You now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     else log(bot, `Successfully crafted ${itemName}, you now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
@@ -376,10 +445,13 @@ export async function smeltItem(bot, itemName, num=1) {
         // Try to place furnace
         let hasFurnace = world.getInventoryCounts(bot)['furnace'] > 0;
         if (hasFurnace) {
-            let pos = world.getNearestFreeSpace(bot, 1, furnaceRange);
-            await placeBlock(bot, 'furnace', pos.x, pos.y, pos.z);
-            furnaceBlock = world.getNearestBlock(bot, 'furnace', furnaceRange);
+            furnaceBlock = await placeNearby(bot, 'furnace', furnaceRange);
             placedFurnace = true;
+            // told it had no furnace when one wouldn't go down in a cave, the model threw its furnace away
+            if (!furnaceBlock) {
+                log(bot, `Couldn't place your furnace here (you still have it). Move to a more open spot and try again.`);
+                return false;
+            }
         }
     }
     if (!furnaceBlock){
@@ -407,13 +479,22 @@ export async function smeltItem(bot, itemName, num=1) {
         // check if the furnace is already smelting something
         let input_item = furnace.inputItem();
         if (input_item && input_item.type !== mc.getItemId(itemName) && input_item.count > 0) {
-            // TODO: check if furnace is currently burning fuel. furnace.fuel is always null, I think there is a bug.
-            // This only checks if the furnace has an input item, but it may not be smelting it and should be cleared.
-            log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
-            bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
-            if (placedFurnace)
-                await collectBlock(bot, 'furnace', 1);
-            return false;
+            // something else of ours left in there, often the spare from a background smelt: a kit's leftover gold
+            // blocked its iron, and the model then tried the same smelt a dozen times. take it out (with whatever it
+            // has made so far) and go on
+            try {
+                if (furnace.outputItem()) await furnace.takeOutput();
+                await furnace.takeInput();
+                if (bot.background_smelt && bot.background_smelt.position.equals(furnaceBlock.position))
+                    bot.background_smelt = null;
+                log(bot, `Took the ${mc.getItemName(input_item.type)} out of the furnace to smelt ${itemName}.`);
+            } catch (err) {
+                log(bot, `The furnace is currently smelting ${mc.getItemName(input_item.type)}.`);
+                bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                if (placedFurnace)
+                    await collectBlock(bot, 'furnace', 1);
+                return false;
+            }
         }
         // check if the bot has enough items to smelt
         let inv_counts = world.getInventoryCounts(bot);
@@ -439,13 +520,31 @@ export async function smeltItem(bot, itemName, num=1) {
                     await collectBlock(bot, 'furnace', 1);
                 return false;
             }
+            // keep 8 planks' worth of wood once the iron pickaxe is made: burning it all for iron sent the bot back up
+            // from the mine for the shield's planks and sticks. the first 3 iron for the pickaxe may still use it
+            const is_wood = (name) => /_(log|planks|wood|stem|hyphae)$/.test(name);
+            let usable = fuel.count;
+            const held = world.getInventoryCounts(bot);
+            if (is_wood(fuel.name) && (held['iron_pickaxe'] > 0 || held['diamond_pickaxe'] > 0)) {
+                const planks_worth = (name, count) => /_(log|wood|stem|hyphae)$/.test(name) ? 4 * count : name.endsWith('_planks') ? count : 0;
+                const other_wood = bot.inventory.items().filter(item => item !== fuel).reduce((n, item) => n + planks_worth(item.name, item.count), 0);
+                const reserve = Math.max(0, 8 - other_wood);
+                usable = fuel.count - Math.ceil(reserve / planks_worth(fuel.name, 1));
+                if (usable < 1 || usable * mc.getFuelSmeltOutput(fuel.name) < 1) {
+                    log(bot, `Your wood is kept for the shield and sticks, so there's no fuel to smelt ${itemName}: mine coal_ore for fuel (each smelts 8), e.g. !collectBlocks("coal_ore", ${Math.max(1, Math.ceil(num / 8))}).`);
+                    bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
+                    if (placedFurnace)
+                        await collectBlock(bot, 'furnace', 1);
+                    return false;
+                }
+            }
             log(bot, `Using ${fuel.name} as fuel.`);
 
             let put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
 
-            if (fuel.count < put_fuel) {
+            if (usable < put_fuel) {
                 // smelt what the fuel allows rather than nothing: the first 3 ingots make the iron pickaxe
-                const can_smelt = Math.floor(fuel.count * mc.getFuelSmeltOutput(fuel.name));
+                const can_smelt = Math.floor(usable * mc.getFuelSmeltOutput(fuel.name));
                 if (can_smelt < 1) {
                     log(bot, `You don't have enough ${fuel.name} to smelt ${itemName}.`);
                     bot.closeWindow(furnace); // picking the furnace back up needs the inventory window
@@ -1255,7 +1354,9 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     const unsafeBlocks = ['obsidian'];
 
     let refused = 0; // blocks the server put back after we broke them, e.g. spawn protection
+    let failures = 0; // blocks we couldn't get to
     const refused_positions = new Set();
+    const tunneled = new Set(); // blocks we've dug a tunnel towards, once each
     for (let i=0; i<num; i++) {
         if (bot.interrupt_code)
             break;
@@ -1298,7 +1399,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         // the nearest one is often high up a tree, and pillaring or climbing through leaves to it is slow and clumsy
         // for the pathfinder. prefer blocks near our feet, so it takes the low logs of nearby trees first
         const feet = bot.entity.position.y;
-        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2);
+        // and ores that show in a cave wall or tunnel over ones buried in the rock, which have to be dug through to:
+        // an opening spent 2.5 minutes tunnelling to 3 scattered iron and missed the iron pickaxe deadline by seconds
+        const exposed = b => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => isAirLike(bot.blockAt(b.position.offset(x, y, z))));
+        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2) + (exposed(b) ? 0 : 6);
         const block = blocks.reduce((best, b) => cost(b) < cost(best) ? b : best);
         await bot.tool.equipForBlock(block);
         if (isLiquid) {
@@ -1369,6 +1473,28 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             else {
                 log(bot, `Failed to collect ${blockType}: ${err}.`);
+                // in solid rock the path search gives up long before the block's out of reach: a kit gave up on all the
+                // gold and gravel in sight. tunnel straight to it (once for each block) and try it again
+                const key = block.position.toString();
+                if (/Took to long|No path|NoPath/i.test(String(err)) && !isLiquid && !tunneled.has(key) &&
+                        bot.entity.position.distanceTo(block.position) <= 24) {
+                    tunneled.add(key);
+                    if (await tunnelTowards(bot, block.position)) {
+                        log(bot, `Tunneled to the ${blockType} at ${block.position}.`);
+                        i--;
+                        continue;
+                    }
+                    if (bot.interrupt_code) break;
+                }
+                // try a different one next: the same unreachable log was picked again and again, 5 seconds of path
+                // search each, and a run was reset for having no wood 90 seconds in. a failure doesn't use up one of
+                // the num, but 3 of them end it
+                refused_positions.add(block.position.toString());
+                if (++failures >= 5) {
+                    log(bot, `Couldn't reach the ${blockType} here, giving up after ${failures} tries.`);
+                    break;
+                }
+                i--;
                 continue;
             }
         }
@@ -1378,6 +1504,53 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     }
     log(bot, `Collected ${collected} ${blockType}.`);
     return collected > 0;
+}
+
+async function tunnelTowards(bot, target, maxSteps = 30) {
+    /* Dig a straight 1x2 tunnel towards target (a Vec3), one axis at a time and a block up or down at a time to match
+       its height, until it's within reach. For ores in solid rock, where the path search gives up first ("Took to long
+       to decide path"): a kit gave up on all the gold and gravel in sight that way. Stops at anything next to lava or
+       water, or that can't be dug. Returns true if it got within reach. */
+    const liquid = (p) => ['lava', 'water'].includes(bot.blockAt(p)?.name) || isWaterBlock(bot.blockAt(p));
+    const nearLiquid = (p) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => liquid(p.offset(x, y, z)));
+    const clear = async (p) => {
+        const b = bot.blockAt(p);
+        if (!b || isAirLike(b)) return true;
+        if (!b.diggable || liquid(p) || nearLiquid(p) || p.equals(target)) return false;
+        return await breakBlockAt(bot, p.x, p.y, p.z);
+    };
+    for (let step = 0; step < maxSteps; step++) {
+        if (bot.interrupt_code) return false;
+        const here = bot.entity.position.floored();
+        if (bot.entity.position.distanceTo(target.offset(0.5, 0.5, 0.5)) <= 3.5) return true;
+        const dx = target.x - here.x, dz = target.z - here.z, dy = Math.sign(target.y - here.y);
+        // along the longer horizontal axis first; straight up or down once right above or below it
+        const [sx, sz] = dx === 0 && dz === 0 ? [0, 0] : Math.abs(dx) >= Math.abs(dz) ? [Math.sign(dx), 0] : [0, Math.sign(dz)];
+        if (sx === 0 && sz === 0 && dy === 0) return true;
+        const next = here.offset(sx, sx === 0 && sz === 0 ? dy : (dy > 0 ? 1 : dy < 0 ? -1 : 0), sz);
+        // straight down only onto solid ground: digging out the floor over a cave drops us into it
+        if (sx === 0 && sz === 0 && dy < 0 && bot.blockAt(next.offset(0, -1, 0))?.boundingBox !== 'block') return false;
+        // our feet and head in the next spot, plus headroom to step up, or the block we walk through to step down
+        const cells = [next, next.offset(0, 1, 0)];
+        if (next.y > here.y) cells.push(here.offset(0, 2, 0));
+        if (next.y < here.y) cells.push(next.offset(0, 2, 0));
+        for (const c of cells) {
+            if (!(await clear(c))) return false;
+            if (bot.interrupt_code) return false;
+        }
+        // something to stand on there (not straight down, where we just drop)
+        if (!(sx === 0 && sz === 0) && bot.blockAt(next.offset(0, -1, 0))?.boundingBox !== 'block') {
+            const scaffold = getScaffoldItem(bot)?.name;
+            if (!scaffold || !(await placeBlock(bot, scaffold, next.x, next.y - 1, next.z, 'bottom', true))) return false;
+        }
+        try {
+            await goToPosition(bot, next.x + 0.5, next.y, next.z + 0.5, 0.4);
+        } catch (err) {
+            return false;
+        }
+        if (bot.entity.position.floored().equals(here)) return false; // didn't move
+    }
+    return bot.entity.position.distanceTo(target.offset(0.5, 0.5, 0.5)) <= 3.5;
 }
 
 export async function pickupNearbyItems(bot) {
@@ -3907,7 +4080,10 @@ async function pourLiquid(bot, bucketName, pos) {
        lava doesn't spread towards us. */
     const liquid = bucketName === 'water_bucket' ? 'water' : 'lava';
     const bucket = bot.inventory.items().find(i => i.name === bucketName);
-    if (!bucket) return false;
+    if (!bucket) {
+        log(bot, `No ${bucketName} to pour into ${pos}.`);
+        return false;
+    }
     const aim = findPourAim(bot, pos);
     if (!aim) {
         const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0);
@@ -3985,6 +4161,473 @@ async function scoopLiquid(bot, pos, liquid) {
     return false;
 }
 
+async function craftPersistently(bot, item) {
+    /* Craft one of an item for a scripted stretch of a speedrun, which has no model to try again. Crafting can take a
+       few tries: on a 1.21.11 server the crafting table came out of the 2x2 grid as nothing twice before the third one
+       worked ("you now have undefined crafting_table"), and a cramped spot (a hole underground, a hillside among
+       trees) can leave nowhere to put the table. Wait for the inventory to catch up, then step away. */
+    for (let tries = 0; tries < 3; tries++) {
+        const said = bot.output.length;
+        if (await craftRecipe(bot, item, 1)) return true;
+        if (bot.interrupt_code) return false;
+        // short of what it takes: trying again (and walking about in between) won't change that, and a kit short of
+        // iron spent most of a minute on it
+        if (bot.output.slice(said).includes('do not have the resources')) return false;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (tries > 0) try { await moveAway(bot, 3); } catch (err) { /* try from here */ }
+    }
+    return false;
+}
+
+export async function speedrunKit(bot) {
+    /**
+     * Get everything between the iron pickaxe and the nether in one go, without stopping to think between steps: an
+     * iron sword, a shield and an iron chestplate, then the portal kit: 2 buckets, flint_and_steel and golden boots.
+     * Mines the iron (about 18 more), gold, gravel and coal in one trip, then smelts and crafts. Stops at the first
+     * step that fails, leaving the rest to the checklist. Use it once you have an iron pickaxe.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if it got everything.
+     * @example
+     * await skills.speedrunKit(bot);
+     **/
+    // after the iron pickaxe the model spent 10-20 minutes on this in every run: 64 iron at a time, smelting a few at
+    // a time on the shield's wood, throwing its furnace away, searching for gold over and over
+    const count = (name) => world.getInventoryCounts(bot)[name] || 0;
+    const worn = () => [...bot.inventory.slots.slice(5, 9), bot.inventory.slots[45]].filter(Boolean).map(i => i.name);
+    const has = (...names) => names.some(n => count(n) > 0 || worn().includes(n));
+    const near = (names, range) => world.getNearestBlocksWhere(bot, b => names.includes(b.name), range, 1).length > 0;
+    const stop = (step) => {
+        log(bot, `The kit stopped at: ${step}. Carry on from the next step in !gameProgress.`);
+        return false;
+    };
+    const craft = (item) => craftPersistently(bot, item);
+    // Pathfinding/digging can transiently abort while chunks update or another mode resets a path.
+    // Keep whatever was already gathered and let the stage continue instead of throwing the whole kit away.
+    const gather = async (type, amount) => {
+        try {
+            return await collectBlock(bot, type, amount);
+        } catch (err) {
+            log(bot, `Collection hiccup for ${type}: ${err.message}. Keeping progress and carrying on.`);
+            return false;
+        }
+    };
+    if (!has('iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'))
+        return stop('the iron pickaxe (it needs one first: !speedrunOpening, or mine 3 iron_ore and smelt them)');
+
+    const netherOnly = process.env.MINDCRAFT_NETHER_ONLY === '1';
+    const want_sword = !netherOnly && !has('iron_sword', 'diamond_sword', 'netherite_sword');
+    const want_shield = !netherOnly && !has('shield');
+    const want_chestplate = !netherOnly && !has('iron_chestplate', 'diamond_chestplate', 'netherite_chestplate');
+    const buckets = () => count('bucket') + count('water_bucket') + count('lava_bucket');
+    const want_buckets = Math.max(0, 2 - buckets());
+    const want_flint_and_steel = !has('flint_and_steel', 'fire_charge');
+    const want_boots = !netherOnly && !has('golden_boots', 'golden_helmet', 'golden_leggings', 'golden_chestplate');
+    const iron_needed = (want_sword ? 2 : 0) + (want_shield ? 1 : 0) + (want_chestplate ? 8 : 0) + 3 * want_buckets + (want_flint_and_steel ? 1 : 0);
+    const pending = bot.background_smelt?.output === 'iron_ingot' ? bot.background_smelt.expected : 0;
+    const iron_have = count('iron_ingot') + count('raw_iron') + pending;
+
+    // one trip for all of it: iron, gold for the boots, gravel for the flint, and the coal to smelt it with
+    const iron = () => count('iron_ingot') + count('raw_iron') + pending;
+    if (iron() < iron_needed) {
+        await gather('iron_ore', iron_needed - iron());
+        if (bot.interrupt_code) return false;
+    }
+    // the iron in sight can all be out of reach (one kit got 1 of 17 and went on to craft nothing): go where iron is
+    // common, around y=16, or somewhere new, and mine there
+    for (let pass = 0; pass < 2 && iron() < iron_needed - 2; pass++) {
+        const y = Math.round(bot.entity.position.y);
+        if (y > 24) await digDown(bot, y - 16);
+        else await explore(bot, 40);
+        if (bot.interrupt_code) return false;
+        await gather('iron_ore', iron_needed - iron());
+        if (bot.interrupt_code) return false;
+    }
+    if (want_boots && count('gold_ingot') + count('raw_gold') < 4 && near(['gold_ore', 'deepslate_gold_ore'], 32)) {
+        await gather('gold_ore', 4 - count('gold_ingot') - count('raw_gold'));
+        if (bot.interrupt_code) return false;
+    }
+    if (want_flint_and_steel && count('flint') === 0 && (netherOnly || near(['gravel'], 32))) {
+        await gather('flint', 1);
+        if (bot.interrupt_code) return false;
+    }
+    // the shield's 6 planks: the opening keeps them, but a short tree can leave fewer
+    const planks = () => Object.entries(world.getInventoryCounts(bot)).reduce((n, [name, c]) => n + (name.endsWith('_planks') ? c : /_(log|stem)$/.test(name) ? 4 * c : 0), 0);
+    if (want_shield && planks() < 6) {
+        const log_name = world.getNearestBlocksWhere(bot, b => /_(log|stem)$/.test(b.name) && !b.name.startsWith('stripped'), 32, 1)[0]?.name;
+        if (log_name) await gather(log_name, 2);
+        if (bot.interrupt_code) return false;
+    }
+    const to_smelt = () => count('raw_iron') + count('raw_gold');
+    const fuel = () => 8 * (count('coal') + count('charcoal'));
+    if (fuel() < to_smelt() && near(['coal_ore', 'deepslate_coal_ore'], 32)) {
+        await gather('coal_ore', Math.ceil((to_smelt() - fuel()) / 8));
+        if (bot.interrupt_code) return false;
+    }
+
+    // golden boots first: a furnace smelts one kind at a time, and crafting the boots collects the gold and frees it
+    if (want_boots && count('gold_ingot') + count('raw_gold') >= 4) {
+        if (count('raw_gold') > 0 && count('gold_ingot') < 4 && !(await smeltItem(bot, 'raw_gold', count('raw_gold'))))
+            return stop('smelting the gold (it needs fuel: coal, or wood)');
+        if (bot.interrupt_code) return false;
+        if (!(await craft('golden_boots'))) return stop('the golden boots');
+        if (bot.interrupt_code) return false;
+    }
+    if (count('raw_iron') > 0) {
+        if (!(await smeltItem(bot, 'raw_iron', count('raw_iron'))))
+            return stop('smelting the iron (it needs fuel: coal, or wood)');
+        if (bot.interrupt_code) return false;
+    }
+    // the gear first, the most use if the iron runs short: crafting fetches the ingots still smelting. one that can't be
+    // made (no trees down a mine for the shield) doesn't hold up the rest
+    const missing = [];
+    const make = async (item, what = item) => {
+        if (await craft(item)) return true;
+        missing.push(what);
+        return false;
+    };
+    if (want_shield) await make('shield', 'a shield (6 planks of any wood and 1 iron_ingot)');
+    if (bot.interrupt_code) return false;
+    if (want_sword) await make('iron_sword');
+    if (bot.interrupt_code) return false;
+    // crafting armor puts it on
+    if (want_chestplate) await make('iron_chestplate');
+    if (bot.interrupt_code) return false;
+    while (buckets() < 2) {
+        if (!(await make('bucket', `${2 - buckets()} bucket(s) (3 iron_ingot each)`))) break;
+        if (bot.interrupt_code) return false;
+    }
+    if (want_flint_and_steel) {
+        if (count('flint') === 0) missing.push('flint_and_steel (it needs flint: !collectBlocks("flint", 1) mines gravel until some drops)');
+        else await make('flint_and_steel');
+    }
+    if (bot.interrupt_code) return false;
+    if (want_boots && !has('golden_boots'))
+        missing.push('golden boots (no gold_ore close by: mine 4 when you see some, then smelt them and craft golden_boots)');
+    // torches, so the tunnels we work in get lit as we go (collecting places one where it's dark, if we have any) and
+    // fewer zombies spawn around us: runs kept dying to them down the mines, one in seconds from full health
+    if (count('torch') < 8 && count('coal') + count('charcoal') >= 4) {
+        await craftRecipe(bot, 'torch', 2);
+        if (bot.interrupt_code) return false;
+    }
+    // cook the opening's meat now the furnace is free: raw it hardly feeds, and health only comes back well fed. 3 at a
+    // time, all done before smeltItem returns (more are left smelting in the furnace, which is no good for food)
+    const raw_meat = ['beef', 'porkchop', 'mutton', 'chicken', 'rabbit'].find(name => count(name) > 0);
+    if (raw_meat && count('coal') + count('charcoal') > 0) {
+        await smeltItem(bot, raw_meat, Math.min(3, count(raw_meat)));
+        if (bot.interrupt_code) return false;
+    }
+    if (missing.length > 0) {
+        log(bot, `The kit still needs: ${missing.join('; ')}. Carry on with !gameProgress.`);
+        return false;
+    }
+    log(bot, `Kit done: iron sword, shield, iron chestplate, 2 buckets, flint_and_steel and golden boots. Next step: !gameProgress.`);
+    return true;
+}
+
+
+async function approachWithoutDigging(bot, pos, range) {
+    /* Walk to within range of pos without digging anything, giving up after 20 seconds. For liquids: digging our way to
+       a lava pool let it in (a practice bot burned to death), and digging to water behind stone flooded the tunnel (a
+       live run drowned). The pathfinder on its own never gives up on a path it can't follow. Returns true if we got
+       there. */
+    if (bot.entity.position.distanceTo(pos) <= range) return true;
+    const movements = makeMovements(bot);
+    movements.canDig = false;
+    bot.pathfinder.setMovements(movements);
+    const going = bot.pathfinder.goto(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range));
+    going.catch(() => {}); // stopped below once we've given up on it
+    let timer;
+    try {
+        await Promise.race([going, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('took too long')), 20000); })]);
+        return true;
+    } catch (err) {
+        return false;
+    } finally {
+        clearTimeout(timer);
+        bot.pathfinder.setGoal(null);
+    }
+}
+
+async function fillWaterSafely(bot, range = 64) {
+    /* Fill an empty bucket from water with air above it (a lake, a river, a pool in a cave) that we can walk up to
+       without digging. Returns true once we have a water_bucket. */
+    if (world.getInventoryCounts(bot)['water_bucket']) return true;
+    const sources = world.getNearestBlocksWhere(bot, b => b.name === 'water' && b.metadata === 0 &&
+        (!b.position || isAirLike(bot.blockAt(b.position.offset(0, 1, 0)))), range, 12).filter(b => b.position);
+    for (const source of sources.slice(0, 6)) {
+        if (bot.interrupt_code) return false;
+        const p = source.position;
+        if (await scoopLiquid(bot, p, 'water')) return true;
+        if (!(await approachWithoutDigging(bot, p, 3.5))) continue;
+        if (await scoopLiquid(bot, p, 'water')) return true;
+    }
+    return !!world.getInventoryCounts(bot)['water_bucket'];
+}
+
+function surfaceWater(bot, range) {
+    /* The nearest water source with open sky above it, which can be reached without digging: underground water is
+       often an aquifer, and mining through to it floods the tunnel (a live run drowned that way). */
+    // (the search first tries each chunk section's palette with blocks that have no position: let those through)
+    return world.getNearestBlocksWhere(bot, b => b.name === 'water' && b.metadata === 0 && (!b.position || world.isOpenToSky(bot, b.position)), range, 1)[0] || null;
+}
+
+function findLavaPool(bot, range, tried = []) {
+    /* The nearest lava pool a portal can be cast at: 12+ lava sources open from above within a few blocks of each
+       other (each frame block uses one up), away from pools tried already. Returns a lava block's position or null. */
+    const sources = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, range, 600)
+        .filter(b => isAirLike(bot.blockAt(b.position.offset(0, 1, 0))))
+        .map(b => b.position);
+    // climbing to a pool costs far more than its distance: one 28 blocks up a hill took minutes of path searching, so
+    // count height above us three times over
+    const here = bot.entity.position;
+    const cost = (p) => p.distanceTo(here) + 3 * Math.max(0, p.y - here.y);
+    sources.sort((a, b) => cost(a) - cost(b));
+    for (const s of sources) {
+        if (tried.some(t => t.distanceTo(s) < 16)) continue;
+        // 12 within 16 blocks: the cast scoops from anywhere within reach, and requiring them within 7 of each other
+        // passed over the spread-out lava lakes of real caves
+        if (sources.filter(o => o.distanceTo(s) <= 16).length >= 12) return s;
+    }
+    return null;
+}
+
+export async function speedrunNether(bot) {
+    /**
+     * Get into the nether with the portal kit, without stopping to think between steps: fill the water bucket, find a
+     * lava pool (nearby, then deeper down where lava is common, then further away), cast a nether portal next to it
+     * and go through. Needs 2 buckets (one may already hold water), a flint_and_steel and about 36 cobblestone.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true once in the nether.
+     * @example
+     * await skills.speedrunNether(bot);
+     **/
+    // no run had got this far: the model searched for lava with !searchForBlock, which walks to the nearest lava
+    // block, often a lone source in a wall the portal can't be cast at
+    if (getDimension(bot) === 'the_nether') return true;
+    if (getDimension(bot) !== 'overworld') {
+        log(bot, `Get back to the overworld first: the nether portal is cast there.`);
+        return false;
+    }
+    // planning the long walks to water and lava means standing still, and the unstuck mode kept restarting the walk to
+    // a pool (it comes back when this ends; the walks give up by themselves when they make no progress)
+    bot.modes.pause('unstuck');
+    const count = (name) => world.getInventoryCounts(bot)[name] || 0;
+    const stop = (step) => {
+        log(bot, `Getting to the nether stopped at: ${step}. Carry on from the next step in !gameProgress.`);
+        return false;
+    };
+    // a portal built already, by an earlier try or before a death
+    if (world.getNearestBlock(bot, 'nether_portal', 32))
+        return await enterPortal(bot, 'nether_portal');
+    if (count('bucket') + count('water_bucket') + count('lava_bucket') < 2)
+        return stop(`2 buckets (you have ${count('bucket') + count('water_bucket') + count('lava_bucket')}; 3 iron_ingot each)`);
+    if (count('flint_and_steel') + count('fire_charge') === 0)
+        return stop('a flint_and_steel (1 iron_ingot and 1 flint: !collectBlocks("flint", 1))');
+    const blocks = () => SCAFFOLD_BLOCKS.reduce((n, name) => n + count(name), 0);
+    if (blocks() < 36) {
+        await collectBlock(bot, 'stone', 36 - blocks());
+        if (bot.interrupt_code) return false;
+    }
+    // water for the cast, before going deeper where there may be none. the water in sight can be out of reach (a
+    // practice run's was all in cave walls), so keep looking: up to the surface, where rivers and lakes are, and around
+    // only water we can walk up to (see fillWaterSafely): the bucket mined its way to water behind the stone, an
+    // aquifer, which flooded the tunnel and drowned the bot in a live run. surface water further off next, and
+    // exploring (which led a practice bot off a cliff into a ravine) last
+    // If the kit finished underground, get back to actual surface height before choosing a river/lake by X/Z.
+    // Previously surfaceWater could identify water above us, travelTo only changed X/Z, and the bot retried the same
+    // unreachable water from y~40 until the stage gave up.
+    if (bot.entity.position.y < 55 || !world.isOpenToSky(bot, bot.entity.position)) {
+        log(bot, `Going to the surface for water before casting the portal.`);
+        await goToSurface(bot);
+        if (bot.interrupt_code) return false;
+    }
+    for (let attempt = 0; attempt < 5 && count('water_bucket') === 0; attempt++) {
+        if (bot.interrupt_code) return false;
+        if (await fillWaterSafely(bot)) break;
+        if (bot.interrupt_code) return false;
+        const water = surfaceWater(bot, 160);
+        if (water) {
+            await travelTo(bot, water.position.x, water.position.z, 3);
+            if (bot.interrupt_code) return false;
+            await fillWaterSafely(bot, 16);
+        }
+        else if (!world.isOpenToSky(bot, bot.entity.position))
+            await goToSurface(bot);
+        else
+            await explore(bot, 80);
+    }
+    if (bot.interrupt_code) return false;
+    if (count('water_bucket') === 0)
+        return stop('water for the cast: find some (rivers, lakes, the sea) and fill a bucket with !useOn("bucket", "water")');
+
+    const tried = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+        if (bot.interrupt_code) return false;
+        const pool = findLavaPool(bot, 128, tried);
+        if (pool) {
+            log(bot, `Lava pool at ${pool}, ${Math.round(bot.entity.position.distanceTo(pool))} blocks away.`);
+            if (bot.entity.position.distanceTo(pool) > 16) {
+                // one path all the way there timed out on the planner and left the bot 35 blocks short, where the cast
+                // found nowhere to build: go in short legs, then up or down to the pool's level
+                await travelTo(bot, pool.x, pool.z, 10);
+                if (bot.interrupt_code) return false;
+                if (Math.abs(bot.entity.position.y - pool.y) > 8) {
+                    try {
+                        await goToPosition(bot, pool.x, pool.y + 2, pool.z, 10);
+                    } catch (err) {
+                        log(bot, `Couldn't get down to the lava: ${err.message}`);
+                    }
+                    if (bot.interrupt_code) return false;
+                }
+            }
+            if (bot.entity.position.distanceTo(pool) > 24) {
+                log(bot, `Couldn't get near the lava at ${pool}, trying another pool.`);
+                tried.push(pool);
+                continue;
+            }
+            if (await castNetherPortal(bot)) {
+                if (bot.interrupt_code) return false;
+                return await enterPortal(bot, 'nether_portal');
+            }
+            if (bot.interrupt_code) return false;
+            tried.push(pool);
+            continue;
+        }
+        // lava pools are common deep down (below y=0), and in caves on the way
+        const y = Math.round(bot.entity.position.y);
+        if (y > -40) {
+            log(bot, `No lava pool in sight, digging down from y=${y}.`);
+            await digDown(bot, Math.min(30, y + 45));
+            if (bot.interrupt_code) return false;
+            if (Math.round(bot.entity.position.y) < y - 3) continue;
+            // stopped by a drop into a cave: digging stops there, so walk down into the cave instead (a practice run
+            // dug sideways at y=25 all the way, with the deep lava out of sight below)
+            try {
+                await goToPosition(bot, bot.entity.position.x, y - 20, bot.entity.position.z, 8);
+            } catch (err) { /* explore from here */ }
+            if (bot.interrupt_code) return false;
+            if (Math.round(bot.entity.position.y) < y - 3) continue;
+        }
+        await explore(bot, 60);
+    }
+    return stop('finding a lava pool to cast the portal at (12+ lava open from above): look deep down near y=-54, or for surface pools, and use !castNetherPortal next to one');
+}
+
+export async function speedrunOpening(bot) {
+    /**
+     * Play the opening of a speedrun straight through, without stopping to think between steps: 6 logs, a wooden
+     * pickaxe, stone and a stone pickaxe, a stone sword and a furnace, then 3 iron and some coal, smelted into an iron pickaxe. Stops
+     * at the first step that fails (no iron nearby, a fight), leaving the rest to the checklist.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if it got as far as the iron pickaxe.
+     * @example
+     * await skills.speedrunOpening(bot);
+     **/
+    // each step through the model took about 10 seconds of thinking on a local model, over a minute in all for steps
+    // that never change
+    // planning a path on the server's old CPU means standing still for a while, and the unstuck mode ended the opening
+    // 15 seconds in while the path to the first tree was planned (it comes back when the opening ends). a bot that's
+    // really stuck here is reset by the runner's deadlines for wood and the pickaxes instead
+    bot.modes.pause('unstuck');
+    const count = (name) => world.getInventoryCounts(bot)[name] || 0;
+    const any = (...names) => names.some(n => count(n) > 0);
+    const stop = (step) => {
+        log(bot, `The opening stopped at: ${step}. Carry on from the next step in !gameProgress.`);
+        return false;
+    };
+    const start = Date.now();
+    const at = () => `${Math.floor((Date.now() - start) / 60000)}:${String(Math.floor((Date.now() - start) / 1000) % 60).padStart(2, '0')}`;
+    const cobble = () => count('cobblestone') + count('cobbled_deepslate');
+    // all of it before crafting: one collect can stop short (no more in reach, a few it couldn't get to), and an opening
+    // got 6 of the furnace's 8 and stopped there
+    const ensureCobble = async (n) => {
+        for (let t = 0; t < 3 && cobble() < n && !bot.interrupt_code; t++)
+            await collectBlock(bot, 'stone', n - cobble());
+    };
+    const craft = (item) => craftPersistently(bot, item);
+
+    if (!any('wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe')) {
+        // 6 logs are 24 planks: 11 for the table, wooden pickaxe and all the sticks up to the iron pickaxe, 2 to smelt
+        // its iron, and 6 for the shield after it. with only 4, the best run had to leave the mine at y=22 for wood
+        // and couldn't find a path back to the trees
+        const findWood = () => world.getNearestBlocksWhere(bot, b => b.name.endsWith('_log') && !b.name.startsWith('stripped'), 64, 1)[0]?.name;
+        // just spawned, the chunks around may still be arriving
+        try { await bot.waitForChunksToLoad(); } catch (err) { /* look anyway */ }
+        const wood = findWood();
+        // no trees in sight: hand over rather than explore (a test explore wandered 1500 blocks and died)
+        if (!wood) return stop('no trees within 64 blocks');
+        // 3 first and then the rest, so the run has wood to show as soon as it did when the model collected 3 (runs
+        // with no logs by 90 seconds get reset, and one lot of 6 says nothing until the last)
+        const logs = () => Object.entries(world.getInventoryCounts(bot)).reduce((n, [name, c]) => n + (name.endsWith('_log') ? c : 0), 0);
+        await collectBlock(bot, wood, 3);
+        if (bot.interrupt_code) return false;
+        // the rest only from the same tree: walking to the next one, the path search timed out twice on the server's
+        // old CPU and took 40 seconds for 1 log. the shield's planks can come later
+        if (logs() < 6 && world.getNearestBlock(bot, wood, 8)) await collectBlock(bot, wood, 6 - logs());
+        if (bot.interrupt_code) return false;
+        // food while we're up here, from a couple of animals close by: down the mines there's none, and with nothing to
+        // eat the bot's health stopped coming back (it only does at 18+ hunger) and it died to zombies in iron armor
+        for (let n = 0; n < 2; n++) {
+            const animal = world.getNearestEntityWhere(bot, e => mc.isHuntable(e) && e.name !== 'llama', 16);
+            if (!animal) break;
+            await attackEntity(bot, animal, true);
+            if (bot.interrupt_code) return false;
+        }
+        await pickupNearbyItems(bot);
+        if (bot.interrupt_code) return false;
+        if (!(await craft('wooden_pickaxe'))) {
+            // A flaky crafting-table placement can consume a second table's four planks before the pickaxe craft.
+            // Recover with one nearby log instead of abandoning an otherwise good opening.
+            const spareWood = findWood();
+            if (!spareWood || !(await collectBlock(bot, spareWood, 1)) || !(await craft('wooden_pickaxe')))
+                return stop('the wooden pickaxe');
+        }
+    }
+    // the stone pickaxe and sword together, up top where there's room for the crafting table
+    const sword = any('stone_sword', 'iron_sword', 'diamond_sword');
+    if (!any('stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe')) {
+        const need = 3 + (sword ? 0 : 2);
+        await ensureCobble(need);
+        if (bot.interrupt_code) return false;
+        if (!(await craft('stone_pickaxe'))) return stop('the stone pickaxe');
+        log(bot, `Stone pickaxe at ${at()} into the opening.`);
+    }
+    if (!any('stone_sword', 'iron_sword', 'diamond_sword')) {
+        await ensureCobble(2);
+        if (!(await craft('stone_sword'))) return stop('the stone sword');
+    }
+    // the furnace's 8, mined faster now with the stone pickaxe
+    if (count('furnace') === 0 && !world.getNearestBlock(bot, 'furnace', 16)) {
+        await ensureCobble(8);
+        if (bot.interrupt_code) return false;
+        if (!(await craft('furnace'))) return stop('the furnace');
+    }
+
+    if (!any('iron_pickaxe', 'diamond_pickaxe')) {
+        const iron = count('raw_iron') + count('iron_ingot');
+        if (iron < 3 && !(await collectBlock(bot, 'iron_ore', 3 - iron)))
+            return stop(`finding iron (none within reach: dig down to around y=16 with !digDown, then !collectBlocks("iron_ore", 3))`);
+        if (bot.interrupt_code) return false;
+        // coal while we're down here, for all the smelting to come (about 20 more iron, and food): with none, the
+        // smelting after the pickaxe burned the wood the shield and sticks need, and the bot went back up for coal.
+        // only if there's some right here and time to spare: 7 blocks down for coal 4:40 in, a run missed the iron
+        // pickaxe deadline (5:00). the kit gets coal on its trip anyway. burning it here keeps the wood for the shield
+        const coal = () => count('coal') + count('charcoal');
+        if (coal() < 4 && Date.now() - start < 3 * 60000 && world.getNearestBlocksWhere(bot, b => b.name === 'coal_ore' || b.name === 'deepslate_coal_ore', 8, 1).length > 0) {
+            await collectBlock(bot, 'coal_ore', 4 - coal());
+            if (bot.interrupt_code) return false;
+        }
+        if (count('iron_ingot') < 3 && !(await smeltItem(bot, 'raw_iron', Math.min(count('raw_iron'), 3))))
+            return stop('smelting the iron (it needs fuel: coal, or wood)');
+        if (bot.interrupt_code) return false;
+        if (!(await craft('iron_pickaxe'))) return stop('the iron pickaxe');
+        log(bot, `Iron pickaxe at ${at()} into the opening.`);
+    }
+    const fuel_left = count('coal') + count('charcoal');
+    log(bot, `Opening done in ${at()}: iron pickaxe, stone sword and a furnace${fuel_left > 0 ? `, with ${fuel_left} coal for smelting` : ''}. Next step: !gameProgress.`);
+    return true;
+}
+
 export async function castNetherPortal(bot) {
     /**
      * Build a lit nether portal without diamonds by casting its obsidian frame from lava and water next to a lava pool. Needs a water_bucket, an empty bucket, a flint_and_steel and about 36 cobblestone (or other cheap blocks), with a lava pool nearby (common underground and near diamond level).
@@ -4025,6 +4668,8 @@ export async function castNetherPortal(bot) {
     // frame layout: i across, j up, k back. j=0 is the ground row, so the top is in reach from the ground. a wall of
     // cheap blocks at k=1 gives every lava and water pour a face to aim at; we stand at k=-2
     const interior = [[1, 1], [2, 1], [1, 2], [2, 2], [1, 3], [2, 3]];
+    // the obsidian slots: the floor and top pairs and the two side columns
+    const frameSlot = (i, j) => ((i === 1 || i === 2) && (j === 0 || j === 4)) || ((i === 0 || i === 3) && j >= 1 && j <= 3);
     // try around a few lava blocks spread over the pool (or pools): rough caves often have no flat spot by the nearest
     const anchors = [];
     for (const b of scoopable) {
@@ -4053,19 +4698,32 @@ export async function castNetherPortal(bot) {
                         if (bot.blockAt(at(i, 0, 1))?.boundingBox !== 'block' && bot.blockAt(at(i, -1, 1))?.boundingBox !== 'block') ok = false;
                         for (let j = (i === 0 || i === 3 ? 1 : 0); j <= 5 && ok; j++) {
                             const block = bot.blockAt(at(i, j, 0));
-                            if (!isAirLike(block)) {
+                            if (block?.name === 'obsidian') {
+                                // an iron pickaxe can't break it: a head start in a frame slot (an earlier cast cut
+                                // short), and no good anywhere else. a recast next to one gave up on clearing it
+                                if (frameSlot(i, j)) score -= 3;
+                                else ok = false;
+                            }
+                            else if (!isAirLike(block)) {
                                 if (!block.diggable) ok = false;
                                 score += 2;
                             }
                         }
                     }
-                    // the space between where we stand and the frame must be open, or it blocks aiming the pours
-                    for (let i = 0; i <= 3 && ok; i++) for (let j = 1; j <= 5 && ok; j++)
-                        if (!isAirLike(bot.blockAt(at(i, j, -1)))) ok = false;
-                    // places to stand in front, on solid ground; more than one gives more angles to aim from
+                    // the space between where we stand and the frame has to be open to aim the pours: it's dug out if it
+                    // isn't. requiring it open already left no site at all by the rough ground of a real lava pool
+                    for (let i = 0; i <= 3 && ok; i++) for (let j = 1; j <= 5 && ok; j++) {
+                        const block = bot.blockAt(at(i, j, -1));
+                        if (!isAirLike(block)) {
+                            if (!block?.diggable || block.name === 'obsidian') ok = false;
+                            score += 2;
+                        }
+                    }
+                    // places to stand in front, on solid ground; more than one gives more angles to aim from. the
+                    // missing ones are made before building, so none yet only makes a site worse
                     const stands = [1, 2, 0, 3].map(i => at(i, 1, -2)).filter(s => bot.blockAt(s.offset(0, -1, 0))?.boundingBox === 'block' &&
                         isAirLike(bot.blockAt(s)) && isAirLike(bot.blockAt(s.offset(0, 1, 0))));
-                    if (ok && stands.length === 0) ok = false;
+                    if (stands.length === 0) score += 4;
                     if (!ok || (best && score >= best.score)) continue;
                     // no liquid anywhere near the build (checked last, it's the most lookups)
                     for (let i = -1; i <= 4 && ok; i++) for (let j = -1; j <= 6 && ok; j++) for (let k = -2; k <= 2 && ok; k++) {
@@ -4101,22 +4759,35 @@ export async function castNetherPortal(bot) {
     for (const i of [1, 2, 0, 3]) {
         if (bot.interrupt_code) return false;
         const spot = at(i, 1, -2);
-        if (stands.some(t => t.equals(spot))) continue;
-        for (const p of [spot, spot.offset(0, 1, 0)]) {
+        // room for us, and for 2 blocks over our head: aiming up at the top slots from under a cave ceiling, every pour
+        // hit the stone just above our head ("No way to aim a pour")
+        for (const p of [spot, spot.offset(0, 1, 0), spot.offset(0, 2, 0), spot.offset(0, 3, 0)]) {
             const b = bot.blockAt(p);
-            if (b && !isAirLike(b) && b.diggable && b.name !== 'water' && b.name !== 'lava') await breakBlockAt(bot, p.x, p.y, p.z);
+            if (b && !isAirLike(b) && b.diggable && !['water', 'lava', 'obsidian'].includes(b.name)) await breakBlockAt(bot, p.x, p.y, p.z);
         }
+        if (stands.some(t => t.equals(spot))) continue;
         const floor = spot.offset(0, -1, 0);
         if (bot.blockAt(floor)?.boundingBox !== 'block') await place(floor);
         if (bot.blockAt(floor)?.boundingBox === 'block' && isAirLike(bot.blockAt(spot)) && isAirLike(bot.blockAt(spot.offset(0, 1, 0))))
             stands.push(spot);
     }
 
+    // open up the space in front of the frame, so every pour has a clear line to aim along
+    for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
+        if (bot.interrupt_code) return false;
+        const p = at(i, j, -1);
+        if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
+            log(bot, `Couldn't clear ${p} in front of the portal.`);
+            return false;
+        }
+    }
     // clear the frame slots above the ground and the space above them. the two floor slots are dug just before they're
     // cast: holes in the ground under our feet tripped up the pathfinder while building the wall
     for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
         if (bot.interrupt_code) return false;
         const p = at(i, j, 0);
+        // obsidian already cast into a frame slot stays (and an iron pickaxe couldn't break it anyway)
+        if (frameSlot(i, j) && bot.blockAt(p)?.name === 'obsidian') continue;
         if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
             log(bot, `Couldn't clear ${p} for the portal.`);
             return false;
@@ -4141,6 +4812,7 @@ export async function castNetherPortal(bot) {
     for (const k of [0, -1]) for (let i = 0; i <= 3; i++) for (let j = 1; j <= 5; j++) {
         if (bot.interrupt_code) return false;
         const p = at(i, j, k);
+        if (k === 0 && frameSlot(i, j) && bot.blockAt(p)?.name === 'obsidian') continue; // cast already, see above
         if (!isAirLike(bot.blockAt(p)) && !(await breakBlockAt(bot, p.x, p.y, p.z))) {
             log(bot, `Couldn't clear ${p} for the portal.`);
             return false;
@@ -4153,6 +4825,8 @@ export async function castNetherPortal(bot) {
         for (const s of [...stands].sort((a, b) => a.distanceTo(pos) - b.distanceTo(pos))) {
             if (bot.interrupt_code) return false;
             await goToPosition(bot, s.x, s.y, s.z, 0);
+            // stuck on the way there: aiming from wherever we ended up hit a block in between ("No way to aim")
+            if (bot.entity.position.distanceTo(s.offset(0.5, 0, 0.5)) > 1.5) continue;
             // still sliding to a stop, the server sees us a little off and the pour lands next to where we aimed
             for (let t = 0; t < 10 && bot.entity.velocity.distanceTo(new Vec3(0, bot.entity.velocity.y, 0)) > 0.01; t++) await sleep(50);
             await sleep(100);
@@ -4163,11 +4837,42 @@ export async function castNetherPortal(bot) {
     const fillLava = async () => {
         if (counts()['lava_bucket']) return true;
         // lava we can see from above (one walled in by rock can't be scooped up), trying a few if a scoop doesn't take
-        const sources = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 20)
-            .filter(b => !inFrame(b.position) && isAirLike(bot.blockAt(b.position.offset(0, 1, 0)))).slice(0, 3);
+        // the pool's edge first, where we can stand right next to the lava: the nearest 3 can all be out in the middle
+        // of the pool, and a practice cast gave up there without a scoop
+        const edge = (p) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => bot.blockAt(p.offset(dx, 0, dz))?.boundingBox === 'block');
+        const sources = world.getNearestBlocksWhere(bot, b => b.name === 'lava' && b.metadata === 0, 48, 40)
+            .filter(b => !inFrame(b.position) && isAirLike(bot.blockAt(b.position.offset(0, 1, 0))))
+            .sort((a, b) => edge(b.position) - edge(a.position))
+            .slice(0, 6);
         for (const source of sources) {
+            if (bot.interrupt_code) return false;
             const p = source.position;
-            await goToPosition(bot, p.x, p.y, p.z, 2.5);
+            // from right here if it's in reach: a practice cast stood 3.7 blocks from the lava, tried to walk closer
+            // without digging, found no way, and gave up on every source
+            if (await scoopLiquid(bot, p, 'lava')) return true;
+            try {
+                // 3.5 blocks off: the bucket reaches 4.5 from our eyes, and walking up to 2.5 the pathfinder got wedged
+                // at the pool's edge and set us on fire in it, again and again. and without digging: digging our way to
+                // the pool let it in, and a practice bot burned to death
+                if (bot.entity.position.distanceTo(p) > 3.5) {
+                    const movements = makeMovements(bot);
+                    movements.canDig = false;
+                    bot.pathfinder.setMovements(movements);
+                    // the pathfinder on its own never gives up on a path it can't follow: a practice cast stood
+                    // "moving" on one spot for minutes. 20 seconds, then the next lava
+                    const going = bot.pathfinder.goto(new pf.goals.GoalNear(p.x, p.y, p.z, 3.5));
+                    going.catch(() => {}); // stopped below once we've given up on it
+                    let timer;
+                    try {
+                        await Promise.race([going, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('took too long')), 20000); })]);
+                    } finally {
+                        clearTimeout(timer);
+                        bot.pathfinder.setGoal(null);
+                    }
+                }
+            } catch (err) {
+                continue; // can't get to this one: the next
+            }
             await sleep(150);
             if (await scoopLiquid(bot, p, 'lava')) return true;
         }
@@ -4195,6 +4900,17 @@ export async function castNetherPortal(bot) {
             const above = bot.blockAt(W);
             if (above?.boundingBox === 'block' && above.name !== 'obsidian' && !(await breakBlockAt(bot, W.x, W.y, W.z))) return false;
             await tidyWater(P);
+            // the water to turn the lava, ready before the lava goes in: an earlier pour's water left behind (or put on
+            // a fire) left none, and every slot after it failed with lava poured and nothing to set it with
+            if (!counts()['water_bucket']) {
+                // water we can walk up to only (see fillWaterSafely): mining through to an aquifer floods the tunnel
+                if (counts()['bucket'])
+                    await fillWaterSafely(bot, 48);
+                if (!counts()['water_bucket']) {
+                    log(bot, `Lost the water for the cast and couldn't get more nearby.`);
+                    return false;
+                }
+            }
             if (bot.blockAt(P)?.name !== 'lava') {
                 // cobblestone (from flowing lava meeting water) or anything else in the slot comes out first
                 if (!isAirLike(bot.blockAt(P)) && !(await breakBlockAt(bot, P.x, P.y, P.z))) return false;
@@ -4231,8 +4947,19 @@ export async function castNetherPortal(bot) {
     await tidyWater(at(1, 1, 0));
     for (const [i, j] of interior) {
         if (bot.blockAt(at(i, j, 0))?.name === 'water') await sleep(2000);
-        if (!(await place(at(i, j, 0)))) {
-            log(bot, `Couldn't fill the inside of the portal at ${at(i, j, 0)}.`);
+        let placed = await place(at(i, j, 0));
+        // a pour still flowing there, or no face to aim at from where we stood: one practice cast stopped here after
+        // building the whole wall. wait a moment, and try from each standing spot
+        for (let t = 0; !placed && t < stands.length && !bot.interrupt_code; t++) {
+            const s = stands[t];
+            try {
+                await goToPosition(bot, s.x, s.y, s.z, 0);
+            } catch (err) { /* try from wherever we got to */ }
+            await sleep(700);
+            placed = await place(at(i, j, 0));
+        }
+        if (!placed) {
+            log(bot, `Couldn't fill the inside of the portal at ${at(i, j, 0)} (${bot.blockAt(at(i, j, 0))?.name ?? 'nothing'} there, standing at ${bot.entity.position.floored()}).`);
             return false;
         }
     }

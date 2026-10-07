@@ -3,6 +3,7 @@ import { executeCommand } from '../commands/index.js';
 import { ConstructionTaskValidator, Blueprint } from './construction_tasks.js';
 import { CookingTaskInitiator } from './cooking_tasks.js';
 import { BeatGameTaskValidator } from './beat_game_tasks.js';
+import * as world from '../library/world.js';
 
 const PROGRESS_FILE = './hells_kitchen_progress.json';
 
@@ -235,6 +236,8 @@ export class Task {
     constructor(agent, task_data, taskStartTime = null, taskSplits = []) {
         this.agent = agent;
         this.data = null;
+        this.created = Date.now(); // when this process took the task on, as opposed to when the task started
+
         if (taskStartTime !== null)
             this.taskStartTime = taskStartTime;
         else
@@ -382,7 +385,9 @@ export class Task {
         let other_names = this.available_agents.filter(n => n !== this.name);
         const elapsedTime = (Date.now() - this.taskStartTime) / 1000;
 
-        if (elapsedTime >= 30 && this.available_agents.length !== this.data.agent_count) {
+        // only a task for several bots can be missing one, and only after this process has had time to hear who's
+        // there: restarted 13 minutes into a run, a bot ended it at once, before the list of agents had arrived
+        if (this.data.agent_count > 1 && (Date.now() - this.created) / 1000 >= 30 && elapsedTime >= 30 && this.available_agents.length !== this.data.agent_count) {
             console.log('No other agents found. Task unsuccessful.');
             return {"message": 'No other agents found', "score": 0};
         }
@@ -440,8 +445,9 @@ export class Task {
             this.initiator = null;
         }
 
-        //wait for a bit so bots are teleported
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+        //wait for a bit so bots are teleported (nobody is teleported any more, and a speedrun's clock is running)
+        if (this.data.agent_count > 1)
+            await new Promise((resolve) => setTimeout(resolve, 3000));
 
         if (this.agent.count_id === 0 && this.data.human_count > 0) {
             console.log('Clearing human player inventories');
@@ -524,7 +530,67 @@ export class Task {
             }
             await executeCommand(this.agent, `!startConversation("${other_name}", "${this.data.conversation}")`);
         }
+        // the opening never changes, so play it straight through before the model takes over: thinking between
+        // each of its steps took over a minute on a local model
+        if (this.task_type === 'beat_game')
+            await this.playOpening();
         await this.setAgentGoal();
+    }
+
+    async playOpening() {
+        // the run is set up by now (inventory cleared, on the surface), so score it again: the splits the opening
+        // reaches only printed once it was over, and the runner resets a run with no stone pickaxe split by 2:30
+        this.initializing = false;
+        const opening = await this.runScripted('!speedrunOpening', 6);
+        // then everything for the nether, once the opening got the iron pickaxe: the model took 10-20 minutes over it
+        const pickaxe = this.agent.bot.inventory.items().some(i => i.name === 'iron_pickaxe' || i.name === 'diamond_pickaxe');
+        const kit = pickaxe ? await this.runScripted('!speedrunKit', 12) : null;
+        // then into the nether, once the kit has the buckets and flint_and_steel
+        const items = this.agent.bot.inventory.items();
+        const buckets = items.filter(i => ['bucket', 'water_bucket', 'lava_bucket'].includes(i.name)).reduce((n, i) => n + i.count, 0);
+        const lighter = items.some(i => i.name === 'flint_and_steel' || i.name === 'fire_charge');
+        const nether = kit && buckets >= 2 && lighter ? await this.runScripted('!speedrunNether', 12) : null;
+        // the model takes over from here: tell it how far they got, and where they stopped if they did
+        for (const [name, command, result] of [['Opening', '!speedrunOpening', opening], ['Kit', '!speedrunKit', kit], ['Nether', '!speedrunNether', nether]]) {
+            if (!result) continue;
+            console.log(`${name} result: ${result}`);
+            await this.agent.history.add('system', `${command} ran first. ${result}`);
+        }
+    }
+
+    async runScripted(command, minutes, wait_for_resume = true) {
+        const bot = this.agent.bot;
+        // a scripted stretch of the run is one long action, and its output only came back at the end, where nothing
+        // printed it: echo it to the run log as it goes (the runner looks there for the first logs, and resets a run
+        // with none by 90 seconds, so every run with the opening was reset)
+        let printed = 0;
+        let echoed = '';
+        const echo = () => {
+            const output = bot.output || '';
+            if (output.length < printed) printed = 0;
+            const out = output.slice(printed).trim();
+            printed = output.length;
+            if (out) {
+                console.log(out);
+                echoed += out + '\n';
+            }
+        };
+        const timer = setInterval(echo, 1000);
+        let result;
+        try {
+            result = await executeCommand(this.agent, command);
+            // a mode cutting in (self defense, digging out of fallen gravel) stops it, and it resumes once the mode is
+            // done (no resume after a death): wait for that before the model takes over. not while self-prompting,
+            // where nothing resumes: the self-prompter's autopilot runs it again instead
+            const deadline = Date.now() + minutes * 60000;
+            while (wait_for_resume && (this.agent.actions.resume_func || this.agent.actions.executing) && Date.now() < deadline)
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+            this.agent.actions.cancelResume();
+        } finally {
+            clearInterval(timer);
+        }
+        // a resumed run's result goes nowhere, so use the end of what it printed
+        return result || (echoed && `Its last output:\n${echoed.slice(-600)}`);
     }
     
     async moveToSurface() {
@@ -537,7 +603,8 @@ export class Task {
         // somewhere crawling with mobs (a dark forest, a cave mouth) killed three runs in a row before they had a
         // sword, so start those somewhere else nearby
         const mobs = Object.values(bot.entities).filter(e => e.type === 'hostile' && e.position.distanceTo(pos) < 16).length;
-        if (dimension === 'overworld' && !bot.entity.isInWater && bot.blockAt(pos)?.skyLight === 15 && mobs < 2) {
+        // open sky from the blocks above, not the sky light at our feet, which read 0 out in the open
+        if (dimension === 'overworld' && !bot.entity.isInWater && world.isOpenToSky(bot, pos) && mobs < 2) {
             console.log(`${this.name} is already on the surface at ${pos.floored()}.`);
             return;
         }

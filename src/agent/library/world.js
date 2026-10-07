@@ -158,6 +158,26 @@ export function getNearestBlocksWhere(bot, predicate, distance=8, count=10000) {
 }
 
 
+export function isOpenToSky(bot, pos) {
+    /**
+     * Whether there's nothing solid in the 30 blocks above a position (leaves don't count), i.e. it's out in the open.
+     * The sky light mineflayer reports for the blocks the bot stands in read 0 on open ground, so this looks at the
+     * blocks themselves.
+     * @param {Bot} bot - The bot to check with.
+     * @param {Vec3} pos - The position to check above.
+     * @returns {boolean} - true if open to the sky.
+     * @example
+     * let outside = world.isOpenToSky(bot, bot.entity.position.floored());
+     **/
+    if (!pos) return false;
+    const p = pos.floored();
+    for (let dy = 1; dy <= 30; dy++) {
+        const b = bot.blockAt(p.offset(0, dy, 0));
+        if (b && b.boundingBox === 'block' && !b.name.endsWith('leaves')) return false;
+    }
+    return true;
+}
+
 export function getNearestBlock(bot, block_type, distance=16) {
      /**
      * Get the nearest block of the given type.

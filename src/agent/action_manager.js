@@ -112,8 +112,23 @@ export class ActionManager {
             this.resume_func = actionFn;
             assert(actionLabel != null, 'actionLabel is required for new resume');
             this.resume_name = actionLabel;
+            this.resume_count = 0;
+            this.resume_timeout = timeout;
+        }
+        else if (this.resume_timeout !== undefined) {
+            // resumed with the time limit it started with: the idle handler's default (10 minutes) cut a speedrun's
+            // portal cast off partway, though the stage itself has no limit
+            timeout = this.resume_timeout;
         }
         if (this.resume_func != null && (this.agent.isIdle() || new_resume) && (!this.agent.self_prompter.isActive() || new_resume)) {
+            // the same step interrupted again and again (stuck planning a path to one block, the unstuck mode moving
+            // us away, back to it) looped a speedrun's kit for minutes: give up on it after a few tries. fights don't
+            // count: a stage among a lot of mobs is interrupted by every one of them, and that's no reason to stop
+            if (!new_resume && this.last_interrupter === 'mode:unstuck' && ++this.resume_count > 4) {
+                console.log(`Resumed ${this.resume_name} ${this.resume_count - 1} times, giving up on it.`);
+                this.cancelResume();
+                return { success: false, message: null, interrupted: false, timedout: false };
+            }
             this.currentActionLabel = this.resume_name;
             let res = await this._executeAction(this.resume_name, this.resume_func, timeout);
             this.currentActionLabel = '';
@@ -154,6 +169,7 @@ export class ActionManager {
             // also tell agent.bot to stop various actions
             if (this.executing) {
                 console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}"`);
+                this.last_interrupter = actionLabel;
             }
             await this.stop();
 
@@ -217,7 +233,10 @@ export class ActionManager {
             this.currentActionLabel = '';
             this.currentActionFn = null;
             this._abandon = null;
-            this.cancelResume();
+            // an error from being interrupted (a mode stopping a dig: "Digging aborted") isn't the action failing, so
+            // keep its resume: cancelling it here ended a scripted stretch of a speedrun every time a mode cut in
+            if (!this.agent.bot.interrupt_code)
+                this.cancelResume();
             console.error("Code execution triggered catch:", err);
             // Log the full stack trace
             console.error(err.stack);
