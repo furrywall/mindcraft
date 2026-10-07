@@ -1101,7 +1101,11 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
                 log(bot, `Gave up fighting ${entity.name} after ${Math.round(timeout/1000)} seconds.`);
                 return false;
             }
-            const dist = bot.entity.position.distanceTo(entity.position);
+            // from our eyes to the nearest part of it, the way the game measures reach: feet to feet, a blaze hovering
+            // two blocks up was never in reach, even when it could have been hit
+            const eye = bot.entity.position.offset(0, 1.62, 0);
+            const body_y = Math.min(Math.max(eye.y, entity.position.y), entity.position.y + (entity.height || 1.8));
+            const dist = Math.max(0, eye.distanceTo(entity.position.offset(0, body_y - entity.position.y, 0)) - (entity.width || 0.6) / 2);
             if (dist > 48) {
                 log(bot, `${entity.name} got away.`);
                 return false;
@@ -1175,7 +1179,9 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
                     for (let t = 0; t < 10 && bot.entity.velocity.y > -0.05 && !bot.entity.onGround; t++) await sleep(50);
                 }
                 if (!isAlive(bot, entity)) break;
-                if (bot.entity.position.distanceTo(entity.position) <= reach + 0.5) {
+                const eye_now = bot.entity.position.offset(0, 1.62, 0);
+                const body_now = Math.min(Math.max(eye_now.y, entity.position.y), entity.position.y + (entity.height || 1.8));
+                if (eye_now.distanceTo(entity.position.offset(0, body_now - entity.position.y, 0)) - (entity.width || 0.6) / 2 <= reach) {
                     await bot.lookAt(entity.position.offset(0, entity.height * 0.8, 0), true);
                     bot.attack(entity);
                     last_attack = Date.now();
