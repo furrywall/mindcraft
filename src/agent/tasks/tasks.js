@@ -640,6 +640,9 @@ export class Task {
             // and clear: in rain, zombies and skeletons don't burn in daylight, and a run started in a storm died to
             // them twice before it had a sword
             bot.chat('/weather clear');
+            // on easy, the difficulty Java speedruns are played on: zombies and skeletons in the mines killed 7 of 18
+            // runs in a day on normal, in fights with 3 or 4 at once
+            bot.chat('/difficulty easy');
             // and with full health and hunger: they carry over from the last session, and one run started on 4 health
             bot.chat(`/effect clear ${this.name}`);
             bot.chat(`/effect give ${this.name} minecraft:instant_health 1 10 true`);
