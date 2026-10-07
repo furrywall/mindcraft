@@ -1584,7 +1584,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         const exposed = b => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => isAirLike(bot.blockAt(b.position.offset(x, y, z))));
         const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2) + (exposed(b) ? 0 : 6);
         const block = blocks.reduce((best, b) => cost(b) < cost(best) ? b : best);
-        await bot.tool.equipForBlock(block);
+        if (!isLiquid) await ensureHarvestTool(bot, block);
         if (isLiquid) {
             const bucket = bot.inventory.findInventoryItem('bucket');
             if (!bucket) {
@@ -1798,6 +1798,32 @@ async function confirmBroken(bot, block) {
     return true;
 }
 
+async function ensureHarvestTool(bot, block) {
+    /* Hold a tool that can harvest block. Equipping can go missing and the inventory drift (a cast with an iron
+       pickaxe gave up on deepslate for want of one), so pick it by hand, from the server's copy if need be. And with
+       every pickaxe worn out (tunnelling down to the lava wore through the iron one) craft a stone one. */
+    const holds = () => block.canHarvest(bot.heldItem ? bot.heldItem.type : null);
+    await bot.tool.equipForBlock(block).catch(() => {});
+    for (let t = 0; t < 2 && !holds(); t++) {
+        if (t > 0) await resyncInventory(bot);
+        const tool = bot.inventory.items().find(item => block.canHarvest(item.type));
+        if (tool) await bot.equip(tool, 'hand').catch(() => {});
+    }
+    if (!holds() && !bot._crafting_pickaxe && block.canHarvest(mc.getItemId('stone_pickaxe'))) {
+        bot._crafting_pickaxe = true;
+        try {
+            log(bot, `No pickaxe left that can break ${block.name}, crafting a stone one.`);
+            if (await craftRecipe(bot, 'stone_pickaxe', 1)) {
+                const tool = bot.inventory.items().find(item => item.name === 'stone_pickaxe');
+                if (tool) await bot.equip(tool, 'hand').catch(() => {});
+            }
+        } finally {
+            bot._crafting_pickaxe = false;
+        }
+    }
+    return holds();
+}
+
 export async function breakBlockAt(bot, x, y, z) {
     /**
      * Break the block at the given position. Will use the bot's equipped item.
@@ -1830,19 +1856,7 @@ export async function breakBlockAt(bot, x, y, z) {
             await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
         }
         if (bot.game.gameMode !== 'creative') {
-            await bot.tool.equipForBlock(block);
-            let itemId = bot.heldItem ? bot.heldItem.type : null
-            if (!block.canHarvest(itemId)) {
-                // equipping can go missing, and the inventory drift: a cast with an iron pickaxe in its inventory gave
-                // up clearing deepslate for want of one. pick the tool by hand, from the server's copy if need be
-                for (let t = 0; t < 2 && !block.canHarvest(itemId); t++) {
-                    if (t > 0) await resyncInventory(bot);
-                    const tool = bot.inventory.items().find(item => block.canHarvest(item.type));
-                    if (tool) await bot.equip(tool, 'hand').catch(() => {});
-                    itemId = bot.heldItem ? bot.heldItem.type : null;
-                }
-            }
-            if (!block.canHarvest(itemId)) {
+            if (!(await ensureHarvestTool(bot, block))) {
                 log(bot, `Don't have right tools to break ${block.name}.`);
                 return false;
             }
