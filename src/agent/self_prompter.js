@@ -82,7 +82,8 @@ export class SelfPrompter {
                     : await executeCommand(this.agent, `!${stage}`);
                 // the speedrun stages note their own tries (actions.js playStage): note the others', so a stretch that
                 // stopped short is left to the model for a while instead of run again and again
-                if (!stage.startsWith('speedrun')) {
+                // (only once it's done or given up: one cut short by a fight just goes on)
+                if (!stage.startsWith('speedrun') && /You have \d+|No blazes|No nether fortress|Go to the nether/.test(result || '')) {
                     const bot = this.agent.bot;
                     bot.stage_tries = bot.stage_tries || {};
                     bot.stage_tries[stage] = Date.now();
