@@ -93,6 +93,8 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
         if (PROTECTED_BLOCKS.some(name => block.name === name || block.name.endsWith('_' + name)))
             movements.blocksCantBreak.add(block.id);
     }
+    // magma blocks are the floors of flooded caves: digging through one let the water into a kit's tunnel
+    movements.blocksCantBreak.add(bot.registry.blocksByName.magma_block.id);
     return movements;
 }
 
@@ -295,6 +297,11 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
 
         // Look for crafting table
         craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+        // carrying one, put it down here rather than walk to one more than a few steps away: an opening spent 30
+        // seconds failing to climb out of the hole it mined stone in, to get to the table it had left up top
+        if (craftingTable && world.getInventoryCounts(bot)['crafting_table'] > 0 &&
+                bot.entity.position.distanceTo(craftingTable.position.offset(0.5, 0.5, 0.5)) > 6)
+            craftingTable = null;
         if (craftingTable === null && bot.kept_table && bot.blockAt(bot.kept_table)?.name === 'crafting_table' &&
                 bot.entity.position.distanceTo(bot.kept_table) < 64) {
             // the table left down for the next craft (see keepingTable), which we've wandered off from mining
@@ -352,10 +359,13 @@ export async function craftRecipe(bot, itemName, num=1, _depth=0) {
         return false;
     }
     
-    if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4) {
-        await goToNearestBlock(bot, 'crafting_table', 4, craftingTableRange);
+    // from our eyes to the middle of the table, the way reach works: measured from our feet to its corner, a table we
+    // had just walked up to read as out of reach, and an opening crafted a second one with the wooden pickaxe's planks
+    const tableReach = () => bot.entity.position.offset(0, 1.62, 0).distanceTo(craftingTable.position.offset(0.5, 0.5, 0.5));
+    if (craftingTable && tableReach() > 4.5) {
+        await goToNearestBlock(bot, 'crafting_table', 3, craftingTableRange);
     }
-    if (craftingTable && bot.entity.position.distanceTo(craftingTable.position) > 4.5 && !bot.interrupt_code) {
+    if (craftingTable && tableReach() > 5 && !bot.interrupt_code) {
         // a table we can't get to (up a cliff, across a ravine) left a craft waiting 20 seconds for its window, then
         // failing: put another one down here instead
         let have = world.getInventoryCounts(bot)['crafting_table'] > 0;
@@ -1689,11 +1699,17 @@ async function tunnelTowards(bot, target, maxSteps = 30) {
        to decide path"): a kit gave up on all the gold and gravel in sight that way. Stops at anything next to lava or
        water, or that can't be dug. Returns true if it got within reach. */
     const liquid = (p) => ['lava', 'water'].includes(bot.blockAt(p)?.name) || isWaterBlock(bot.blockAt(p));
-    const nearLiquid = (p) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => liquid(p.offset(x, y, z)));
+    // any of the 26 blocks around, not just the 6 touching: a kit tunnelling to iron broke into a flooded cave
+    // that way and drowned. magma blocks are the floors of flooded caves, so never dig one
+    const nearLiquid = (p) => {
+        for (let x = -1; x <= 1; x++) for (let y = -1; y <= 2; y++) for (let z = -1; z <= 1; z++)
+            if ((x || y || z) && liquid(p.offset(x, y, z))) return true;
+        return false;
+    };
     const clear = async (p) => {
         const b = bot.blockAt(p);
         if (!b || isAirLike(b)) return true;
-        if (!b.diggable || liquid(p) || nearLiquid(p) || p.equals(target)) return false;
+        if (!b.diggable || b.name === 'magma_block' || liquid(p) || nearLiquid(p) || p.equals(target)) return false;
         return await breakBlockAt(bot, p.x, p.y, p.z);
     };
     for (let step = 0; step < maxSteps; step++) {
@@ -1809,7 +1825,17 @@ export async function breakBlockAt(bot, x, y, z) {
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
-            const itemId = bot.heldItem ? bot.heldItem.type : null
+            let itemId = bot.heldItem ? bot.heldItem.type : null
+            if (!block.canHarvest(itemId)) {
+                // equipping can go missing, and the inventory drift: a cast with an iron pickaxe in its inventory gave
+                // up clearing deepslate for want of one. pick the tool by hand, from the server's copy if need be
+                for (let t = 0; t < 2 && !block.canHarvest(itemId); t++) {
+                    if (t > 0) await resyncInventory(bot);
+                    const tool = bot.inventory.items().find(item => block.canHarvest(item.type));
+                    if (tool) await bot.equip(tool, 'hand').catch(() => {});
+                    itemId = bot.heldItem ? bot.heldItem.type : null;
+                }
+            }
             if (!block.canHarvest(itemId)) {
                 log(bot, `Don't have right tools to break ${block.name}.`);
                 return false;
@@ -4660,7 +4686,21 @@ export async function speedrunNether(bot) {
         const pool = await findLavaPool(bot, 128, tried);
         if (pool) {
             log(bot, `Lava pool at ${pool}, ${Math.round(bot.entity.position.distanceTo(pool))} blocks away.`);
-            if (bot.entity.position.distanceTo(pool) > 16) {
+            const level = Math.abs(bot.entity.position.y - pool.y) <= 16 &&
+                Math.hypot(bot.entity.position.x - pool.x, bot.entity.position.z - pool.z) <= 48;
+            if (bot.entity.position.distanceTo(pool) > 16 && level) {
+                // about our depth and not far: straight there underground, tunnelling if the path search won't.
+                // travelTo only aims for the x and z, and a practice bot headed up its 90-block shaft to the surface
+                // on the way to a pool 27 blocks off at its own depth
+                try {
+                    await goToPosition(bot, pool.x, pool.y + 2, pool.z, 10);
+                } catch (err) { /* tunnel instead */ }
+                if (bot.interrupt_code) return false;
+                if (bot.entity.position.distanceTo(pool) > 16)
+                    await tunnelTowards(bot, pool.offset(0, 2, 0), 48).catch(() => false);
+                if (bot.interrupt_code) return false;
+            }
+            else if (bot.entity.position.distanceTo(pool) > 16) {
                 // one path all the way there timed out on the planner and left the bot 35 blocks short, where the cast
                 // found nowhere to build: go in short legs, then up or down to the pool's level
                 await travelTo(bot, pool.x, pool.z, 10);
@@ -4886,10 +4926,25 @@ export async function castNetherPortal(bot) {
         if (anchors.length >= 4) break;
         if (anchors.every(a => a.distanceTo(b.position) >= 8)) anchors.push(b.position);
     }
+    // the open air around the pool, which we can walk through to scoop its lava: a practice cast picked a site 13 blocks
+    // of rock from the lava, couldn't get to it without digging (digging to lava lets it in), and moved on to a pool
+    // 104 blocks away
+    const openAround = (anchor) => {
+        const open = new Set(), queue = [];
+        for (const src of scoopable) if (src.position.distanceTo(anchor) <= 16) queue.push(src.position.offset(0, 1, 0));
+        for (let q = 0; q < queue.length && open.size < 6000; q++) {
+            const p = queue[q], key = p.toString();
+            if (open.has(key) || p.distanceTo(anchor) > 18 || !isAirLike(bot.blockAt(p))) continue;
+            open.add(key);
+            for (const [x, y, z] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) queue.push(p.offset(x, y, z));
+        }
+        return open;
+    };
     let best = null, L = anchors[0];
     for (const anchor of anchors) {
         if (best) break;
         L = anchor;
+        const open = openAround(anchor);
         for (const axis of ['x', 'z']) {
             const across = axis === 'x' ? new Vec3(1, 0, 0) : new Vec3(0, 0, 1);
             const back = axis === 'x' ? new Vec3(0, 0, 1) : new Vec3(1, 0, 0);
@@ -4934,6 +4989,8 @@ export async function castNetherPortal(bot) {
                     const stands = [1, 2, 0, 3].map(i => at(i, 1, -2)).filter(s => bot.blockAt(s.offset(0, -1, 0))?.boundingBox === 'block' &&
                         isAirLike(bot.blockAt(s)) && isAirLike(bot.blockAt(s.offset(0, 1, 0))));
                     if (stands.length === 0) score += 4;
+                    // cut off from the pool's open air, it'd take digging to get to the lava
+                    if (![0, 1, 2, 3].some(i => [-1, -2, -3].some(k => open.has(at(i, 1, k).toString())))) score += 8;
                     if (!ok || (best && score >= best.score)) continue;
                     // no liquid anywhere near the build (checked last, it's the most lookups)
                     for (let i = -1; i <= 4 && ok; i++) for (let j = -1; j <= 6 && ok; j++) for (let k = -2; k <= 2 && ok; k++) {

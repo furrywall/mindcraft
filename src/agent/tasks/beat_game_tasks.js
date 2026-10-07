@@ -8,6 +8,9 @@ import { readFileSync, writeFileSync } from 'fs';
 const MILESTONES = [
     {name: 'stone pickaxe', reached: (s) => s.hasAny(['stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'])},
     {name: 'iron pickaxe', reached: (s) => s.hasAny(['iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'])},
+    // what casting the portal needs (see skills.speedrunKit): 2 buckets and something to light it with
+    {name: 'portal kit', reached: (s) => s.count('bucket') + s.count('water_bucket') + s.count('lava_bucket') >= 2 &&
+        s.hasAny(['flint_and_steel', 'fire_charge'])},
     {name: 'entered the nether', reached: (s) => s.dimension === 'the_nether'},
     {name: 'blaze rod', reached: (s) => s.hasAny(['blaze_rod', 'blaze_powder', 'ender_eye'])},
     {name: '12 eyes of ender', reached: (s) => s.count('ender_eye') >= 12},
