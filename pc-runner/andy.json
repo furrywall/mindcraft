@@ -2,7 +2,7 @@
     "name": "andy",
     "model": {
         "api": "ollama",
-        "model": "qwen3.5:9b",
+        "model": "qwen3.5:4b",
         "url": "http://127.0.0.1:11434",
         "params": {
             "think": false,
