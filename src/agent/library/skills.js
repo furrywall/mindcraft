@@ -77,12 +77,29 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
         const id = bot.world.getBlockStateId(p);
         return id >= lava.minStateId && id <= lava.maxStateId;
     };
+    const air = bot.registry.blocksByName.air.id, cave_air = bot.registry.blocksByName.cave_air?.id;
+    const isAir = (p) => { const b = bot.world.getBlockStateId(p); return b === 0 || bot.registry.blocksByStateId[b]?.id === air || bot.registry.blocksByStateId[b]?.id === cave_air; };
     movements.exclusionAreasStep.push(block => {
         const p = block.position;
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
             if (isLava(p.offset(dx, 0, dz)) || isLava(p.offset(dx, -1, dz))) return nether ? 20 : 12;
+            // in the nether, the edge of a drop into lava: a practice bot walking at y=40 went over one and fell 10
+            // blocks into the lava sea
+            if (nether && isAir(p.offset(dx, -1, dz)) && isAir(p.offset(dx, -2, dz))) {
+                for (let dy = 3; dy <= 14; dy++) {
+                    const q = p.offset(dx, -dy, dz);
+                    if (isLava(q)) return 30;
+                    if (!isAir(q)) break;
+                }
+            }
+        }
         return 0;
     });
+    if (nether) {
+        // no sprinting to carry us over an edge, and no drops further than we can see the bottom of
+        movements.allowSprinting = false;
+        movements.maxDropDown = 2;
+    }
 
     const scaffold = new Set(movements.scafoldingBlocks);
     for (const name of SCAFFOLD_BLOCKS) {
