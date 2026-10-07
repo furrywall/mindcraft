@@ -11,5 +11,6 @@
                 "num_ctx": 16384
             }
         }
-    }
+    },
+    "embedding": "none"
 }
