@@ -128,44 +128,18 @@ const modes_list = [
             else if (block.name === 'lava' || block.name === 'fire' ||
                 blockAbove.name === 'lava' || blockAbove.name === 'fire') {
                 say(agent, 'I\'m on fire!');
-                // if you have a water bucket, use it. not in the nether, where water boils away at once: pouring it
-                // there used up the seconds a practice bot needed to get out of the lava, and it burned to death
-                let waterBucket = bot.inventory.findInventoryItem('water_bucket');
-                const nether = (bot.game.dimension || '').includes('nether');
-                if (nether) {
-                    execute(this, agent, async () => {
-                        await skills.moveAway(bot, 5);
-                    });
-                }
-                else if (waterBucket) {
-                    execute(this, agent, async () => {
-                        let success = await skills.placeBlock(bot, 'water_bucket', block.position.x, block.position.y, block.position.z);
-                        if (success) say(agent, 'Placed some water, ahhhh that\'s better!');
-                    });
-                }
-                else {
-                    execute(this, agent, async () => {
-                        let waterBucket = bot.inventory.findInventoryItem('water_bucket');
-                        if (waterBucket) {
-                            let success = await skills.placeBlock(bot, 'water_bucket', block.position.x, block.position.y, block.position.z);
-                            if (success) say(agent, 'Placed some water, ahhhh that\'s better!');
-                            return;
-                        }
-                        let nearestWater = world.getNearestBlock(bot, 'water', 20);
-                        if (nearestWater) {
-                            const pos = nearestWater.position;
-                            let success = await skills.goToPosition(bot, pos.x, pos.y, pos.z, 0.2);
-                            // water at a lava pool's edge can't always be reached, or doesn't get us out: heading
-                            // for the same water 7 times over, the bot burned to death 2 blocks from it
-                            const burning = (b) => b?.name === 'lava' || b?.name === 'fire';
-                            if (success && !burning(bot.blockAt(bot.entity.position)) && !burning(bot.blockAt(bot.entity.position.offset(0, 1, 0)))) {
-                                say(agent, 'Found some water, ahhhh that\'s better!');
-                                return;
-                            }
-                        }
-                        await skills.moveAway(bot, 5);
-                    });
-                }
+                // out of the lava the shortest way first, then water on the flames if we have some (not in the nether,
+                // where water boils away at once: pouring it there used up the seconds a practice bot needed to get out
+                // of the lava). pouring water while still standing in lava is what burned a casting bot to death
+                execute(this, agent, async () => {
+                    if (await skills.escapeLava(bot)) return;
+                    const nether = (bot.game.dimension || '').includes('nether');
+                    const nearestWater = nether ? null : world.getNearestBlock(bot, 'water', 20);
+                    if (nearestWater) {
+                        const pos = nearestWater.position;
+                        await skills.goToPosition(bot, pos.x, pos.y, pos.z, 0.2);
+                    }
+                });
             }
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
                 say(agent, 'I\'m dying!');

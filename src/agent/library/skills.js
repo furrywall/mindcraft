@@ -63,23 +63,23 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     // underground, water is flooded caves with no way up to breathe: two runs in a morning walked into one mining iron
     // and drowned. there, dig round it (rivers up top still get crossed)
     if (bot.entity.position.y < 50) movements.liquidCost = 40;
-    if (getDimension(bot) === 'the_nether') {
-        // two practice bots died in lava crossing the nether to look for a fortress (one dropped 16 blocks in 10
-        // seconds on its way down to the lava sea). no jumping gaps, which out there are often over lava, and keep a
-        // block away from lava where there's another way
-        movements.allowParkour = false;
-        const lava = bot.registry.blocksByName.lava;
-        const isLava = (p) => {
-            const id = bot.world.getBlockStateId(p);
-            return id >= lava.minStateId && id <= lava.maxStateId;
-        };
-        movements.exclusionAreasStep.push(block => {
-            const p = block.position;
-            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
-                if (isLava(p.offset(dx, 0, dz)) || isLava(p.offset(dx, -1, dz))) return 20;
-            return 0;
-        });
-    }
+    // keep a block away from lava where there's another way: two practice bots died in lava crossing the nether to
+    // look for a fortress, and one at the edge of the pool it was casting a portal at (the bucket reaches lava from
+    // 3 blocks off, so there's no need to stand right by it). in the nether, no jumping gaps either, which out there
+    // are often over lava (one bot dropped 16 blocks in 10 seconds on its way down to the lava sea)
+    const nether = getDimension(bot) === 'the_nether';
+    if (nether) movements.allowParkour = false;
+    const lava = bot.registry.blocksByName.lava;
+    const isLava = (p) => {
+        const id = bot.world.getBlockStateId(p);
+        return id >= lava.minStateId && id <= lava.maxStateId;
+    };
+    movements.exclusionAreasStep.push(block => {
+        const p = block.position;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
+            if (isLava(p.offset(dx, 0, dz)) || isLava(p.offset(dx, -1, dz))) return nether ? 20 : 12;
+        return 0;
+    });
 
     const scaffold = new Set(movements.scafoldingBlocks);
     for (const name of SCAFFOLD_BLOCKS) {
@@ -3095,6 +3095,71 @@ export async function followPlayer(bot, username, distance=4) {
     return true;
 }
 
+
+export async function escapeLava(bot) {
+    /**
+     * Get out of lava or fire the shortest way: to the nearest spot within 4 blocks with solid ground and no lava,
+     * then put out the flames with a water bucket if we have one, and scoop the water back up. Pouring water while
+     * still standing in the lava didn't help: a practice bot burned to death at the edge of the pool it was casting a
+     * portal at, and the water it needed for the cast went with it.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if we're out of the lava.
+     * @example
+     * await skills.escapeLava(bot);
+     **/
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const hot = (p) => ['lava', 'fire', 'soul_fire'].includes(bot.blockAt(p)?.name);
+    const inLava = () => hot(bot.entity.position.floored()) || hot(bot.entity.position.offset(0, 1, 0).floored());
+    stopPathfinding(bot);
+    const here = bot.entity.position;
+    let best = null;
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let dy = -1; dy <= 2; dy++) {
+        const p = here.floored().offset(dx, dy, dz);
+        if (bot.blockAt(p.offset(0, -1, 0))?.boundingBox !== 'block' || hot(p) || hot(p.offset(0, 1, 0))) continue;
+        if (bot.blockAt(p)?.boundingBox !== 'empty' || bot.blockAt(p.offset(0, 1, 0))?.boundingBox !== 'empty') continue;
+        // spots by more lava are worse, and climbing is slower
+        const lava_near = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([x, z]) => hot(p.offset(x, 0, z)) || hot(p.offset(x, -1, z))).length;
+        const cost = p.offset(0.5, 0, 0.5).distanceTo(here) + Math.max(0, dy) + 2 * lava_near;
+        if (!best || cost < best.cost) best = {p, cost};
+    }
+    if (best && inLava()) {
+        const target = best.p.offset(0.5, 0, 0.5);
+        const start = Date.now();
+        try {
+            while (Date.now() - start < 5000 && inLava() && !bot.interrupt_code) {
+                await bot.lookAt(target.offset(0, 1.6, 0), true);
+                bot.setControlState('forward', true);
+                bot.setControlState('jump', true);
+                bot.setControlState('sprint', true);
+                await sleep(50);
+            }
+        } finally {
+            bot.clearControlStates();
+        }
+    }
+    if (inLava()) {
+        // nowhere close: away by any path
+        await moveAway(bot, 5).catch(() => {});
+    }
+    const out = !inLava();
+    // still burning: water on the spot, then back in the bucket (the portal cast needs it)
+    // lava keeps us burning for 15 seconds after, a heart a second: two test bots got out and burned to death. pour
+    // it straight down at our feet (placing it with placeBlock walked one back towards the lava first)
+    const water_bucket = bot.inventory.items().find(i => i.name === 'water_bucket');
+    if (out && water_bucket && getDimension(bot) !== 'the_nether') {
+        const feet = bot.entity.position.floored();
+        try {
+            await bot.equip(water_bucket, 'hand');
+            await bot.lookAt(feet.offset(0.5, 0.05, 0.5), true);
+            bot.activateItem();
+            await sleep(800);
+            const water = bot.blockAt(feet);
+            if (water?.name === 'water' && water.metadata === 0) await scoopLiquid(bot, feet, 'water');
+        } catch (err) { /* we're out, at least */ }
+    }
+    log(bot, out ? `Got out of the lava at ${bot.entity.position.floored()}.` : `Couldn't get out of the lava.`);
+    return out;
+}
 
 export async function moveAway(bot, distance) {
     /**
