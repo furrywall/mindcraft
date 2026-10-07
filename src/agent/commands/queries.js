@@ -582,7 +582,9 @@ function getGameProgress(bot) {
     const step = !stage ? next.next : tried ? `!${stage[0]} stopped short just now, so by hand: ${next.next}` : stage[1];
     // at night underground the scripted stretches still work (they mine down there): told to mine what it'll need
     // instead, the model mined iron and gold by hand, a few at a time
-    const use_stage = stage && !tried && (!survival || night_note);
+    // and the opening even at night with nothing: after a death at night, told to dig down and hide, the model tried to
+    // with no pickaxe at all (on easy, the opening's sword and quick start are the better bet)
+    const use_stage = stage && !tried && (!survival || night_note || stage[0] === 'speedrunOpening');
     res += `\nNext step: ${use_stage ? (night_note || '') + stage[1] : survival || step}`;
     bot.next_stage = use_stage ? stage[0] : null; // for the self-prompter, which runs it without asking (getScriptedStage)
     if (!survival && food < 4 && dimension === 'overworld')

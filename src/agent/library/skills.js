@@ -5318,10 +5318,14 @@ export async function castNetherPortal(bot) {
     }
 
     // pour from whichever spot in front can aim at the face, trying the backing wall, then the block under, then the sides
+    // a standing spot with lava in it or next to it (a pour spreading out of its slot): never walk there
+    const lavaBy = (s) => [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, 1, 0]]
+        .some(([x, y, z]) => bot.blockAt(s.offset(x, y, z))?.name === 'lava');
     const pour = async (bucketName, pos) => {
         // the spot straight in front has the clearest line, so try the nearest first
         for (const s of [...stands].sort((a, b) => a.distanceTo(pos) - b.distanceTo(pos))) {
             if (bot.interrupt_code) return false;
+            if (lavaBy(s)) continue;
             await goToPosition(bot, s.x, s.y, s.z, 0);
             // stuck on the way there: aiming from wherever we ended up hit a block in between ("No way to aim")
             if (bot.entity.position.distanceTo(s.offset(0.5, 0, 0.5)) > 1.5) continue;
@@ -5421,9 +5425,19 @@ export async function castNetherPortal(bot) {
                     return false;
                 }
                 if (!(await pour('lava_bucket', P))) continue;
+                // the water from right where we are, straight away: lava spreads a block every second and a half, and
+                // walking to another spot to aim the water let it reach us (3 casts in a row burned the bot to death).
+                // if we can't aim it from here, take the lava back from here before going anywhere
+                if (!(await pourLiquid(bot, 'water_bucket', W))) {
+                    if (await scoopLiquid(bot, P, 'lava')) continue;
+                    if (!(await pour('water_bucket', W))) {
+                        await scoopLiquid(bot, P, 'lava');
+                        continue;
+                    }
+                }
             }
             // water just above the lava source turns it into obsidian
-            if (!(await pour('water_bucket', W))) {
+            else if (!(await pour('water_bucket', W))) {
                 // don't leave lava in the slot to spread towards us: scoop it back and try again
                 await scoopLiquid(bot, P, 'lava');
                 continue;
