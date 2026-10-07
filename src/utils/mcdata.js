@@ -90,21 +90,28 @@ export function initBot(username) {
     // Throttle position packets to avoid kicks on Paper/Spigot servers
     // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
     // when mineflayer sends position updates faster than 50ms apart
+    // the update held back is always the newest one, merged with any held back before it: holding the first and
+    // dropping the rest left the server with the bot halfway through a jump while it stood on the ground, and the
+    // server kicked it for "floating too long" (a live run, 4 minutes from the nether)
     let lastPositionUpdate = 0;
     let pendingPositionPacket = null;
+    let pendingData = null;
     const POSITION_THROTTLE_MS = 50;
     const originalWrite = bot._client.write.bind(bot._client);
+    const packetFor = (data) => 'x' in data && 'yaw' in data ? 'position_look' : 'x' in data ? 'position' : 'look';
     bot._client.write = function(name, data) {
         data = fixChatChecksum(name, data);
         if (name === 'position' || name === 'position_look' || name === 'look') {
             const now = Date.now();
             if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
-                // Queue this packet so the last position update is never lost
+                pendingData = { ...(pendingData || {}), ...data };
                 if (!pendingPositionPacket) {
                     pendingPositionPacket = setTimeout(() => {
                         pendingPositionPacket = null;
+                        const held = pendingData;
+                        pendingData = null;
                         lastPositionUpdate = Date.now();
-                        originalWrite(name, data);
+                        if (held) originalWrite(packetFor(held), held);
                     }, POSITION_THROTTLE_MS - (now - lastPositionUpdate));
                 }
                 return;
@@ -113,6 +120,10 @@ export function initBot(username) {
             if (pendingPositionPacket) {
                 clearTimeout(pendingPositionPacket);
                 pendingPositionPacket = null;
+                // this one goes now: fold in anything held back that it doesn't replace (a turn held back while we move)
+                if (pendingData) data = { ...pendingData, ...data };
+                name = packetFor(data);
+                pendingData = null;
             }
         }
         return originalWrite(name, data);
