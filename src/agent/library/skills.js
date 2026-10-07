@@ -1462,7 +1462,7 @@ async function grabOnTheWay(bot) {
             // gravel is only for a flint, and digging a lot of it brings more down on our heads
             if (name === 'gravel' && grabbed.filter(n => n === 'gravel').length >= 2) break;
             try {
-                await bot.collectBlock.collect(block);
+                await reachAndDig(bot, block);
                 grabbed.push(name.replace('deepslate_', ''));
             } catch (err) {
                 break;
@@ -1608,7 +1608,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         // and ores that show in a cave wall or tunnel over ones buried in the rock, which have to be dug through to:
         // an opening spent 2.5 minutes tunnelling to 3 scattered iron and missed the iron pickaxe deadline by seconds
         const exposed = b => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => isAirLike(bot.blockAt(b.position.offset(x, y, z))));
-        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2) + (exposed(b) ? 0 : 6);
+        // and never one under water while there's another: an opening waded into a lake for the stone on its bed and
+        // spent a minute trying to swim out
+        const wet = b => !isLiquid && [1, 2, 3].some(dy => isWaterBlock(bot.blockAt(b.position.offset(0, dy, 0))));
+        const cost = b => b.position.distanceTo(bot.entity.position) + 4 * Math.max(0, b.position.y - feet - 2) + (exposed(b) ? 0 : 6) + (wet(b) ? 100 : 0);
         const block = blocks.reduce((best, b) => cost(b) < cost(best) ? b : best);
         if (!isLiquid) await ensureHarvestTool(bot, block);
         if (isLiquid) {
@@ -1659,7 +1662,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 success = true;
             }
             else {
-                await bot.collectBlock.collect(block);
+                await reachAndDig(bot, block);
                 success = true;
             }
             // the client clears a dug block right away, even if the server refused the break. if nothing was picked
@@ -1695,7 +1698,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // in solid rock the path search gives up long before the block's out of reach: a kit gave up on all the
                 // gold and gravel in sight. tunnel straight to it (once for each block) and try it again
                 const key = block.position.toString();
-                if (/Took to long|No path|NoPath|GoalChanged/i.test(String(err)) && !isLiquid && !tunneled.has(key) &&
+                if (/Took to long|No path|NoPath|GoalChanged|no progress/i.test(String(err)) && !isLiquid && !tunneled.has(key) &&
                         bot.entity.position.distanceTo(block.position) <= 24) {
                     tunneled.add(key);
                     if (await tunnelTowards(bot, block.position).catch(() => false)) {
@@ -1822,6 +1825,26 @@ async function confirmBroken(bot, block) {
         if (bot.blockAt(pos)?.type === block.type) return false;
     }
     return true;
+}
+
+async function reachAndDig(bot, block) {
+    /* Walk to within reach of block and dig it, then pick up what drops. In place of the collectblock plugin, which
+       paths to somewhere it can see the block from: next to a log at its own feet an opening "planned" for 25 seconds
+       until the path was dropped. The server doesn't need us to see a block to break it, only to be in reach. */
+    const p = block.position;
+    const reach = () => bot.entity.position.offset(0, 1.6, 0).distanceTo(p.offset(0.5, 0.5, 0.5));
+    if (reach() > 4.2) {
+        bot.pathfinder.setMovements(bot.collectBlock.movements || makeMovements(bot));
+        await gotoWithWatchdog(bot, new pf.goals.GoalNear(p.x, p.y, p.z, 2));
+    }
+    bot.pathfinder.setGoal(null);
+    const now = bot.blockAt(p);
+    if (!now || now.type !== block.type) return;
+    if (reach() > 5) throw new Error(`Took to long to decide path to goal! (stopped ${reach().toFixed(1)} blocks from it)`);
+    await bot.tool.equipForBlock(now).catch(() => {});
+    await digSafely(bot, now);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await pickupNearbyItems(bot);
 }
 
 async function digSafely(bot, block) {
