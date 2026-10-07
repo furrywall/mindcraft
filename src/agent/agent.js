@@ -205,6 +205,10 @@ export class Agent {
         // dug route over ~7 blocks: "No path to the goal" on ore after ore
         this.bot.pathfinder.thinkTimeout = 5000;
 
+        // closing a window doesn't fire its own 'close' event, so every furnace opened left a listener behind for good
+        // (a kit hit the 10-listener warning smelting in 3 furnaces). fire it, so they clean up after themselves
+        this.bot.on('windowClose', (window) => window?.emit?.('close'));
+
         // equip waits for the server to confirm the inventory change with no time limit, so when that confirmation
         // went missing a collectBlocks hung on equipping a pickaxe and couldn't even be stopped. give every equip
         // (tools, weapons, the shield, food) 5 seconds, then resync the inventory with the server

@@ -23,6 +23,46 @@ async function say(agent, message) {
 // to perform longer actions, use the execute function which won't block the update loop
 const modes_list = [
     {
+        // the stages pause unstuck (it ended them while a path was being planned), and an opening then stood still
+        // "moving" towards stone for over a minute until the runner's stone pickaxe deadline reset the run. this
+        // doesn't interrupt anything: it drops the stalled goal, so the path call fails and the stage tries another
+        // block (or tunnels to it)
+        name: 'path_stall',
+        description: 'Give up on a path that has stopped moving. Interrupts nothing.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        prev_location: null,
+        prev_dig: null,
+        since: 0,
+        max_stall: 15, // seconds "moving" without moving or digging something new
+        max_planning: 25, // seconds with a goal and no path: an opening "planned" a path for over a minute on one spot
+        update: async function (agent) {
+            const bot = agent.bot;
+            if (!bot._path_stall_hooked) {
+                // fights and following set a goal that moves with its target, and standing still next to it is fine
+                bot.on('goal_updated', (goal, dynamic) => { bot._goal_dynamic = !!dynamic; });
+                bot._path_stall_hooked = true;
+            }
+            const dig = bot.targetDigBlock?.position?.toString() || null;
+            const pathing = bot.pathfinder.goal && !bot._goal_dynamic;
+            if (!pathing || !this.prev_location ||
+                    this.prev_location.distanceTo(bot.entity.position) >= 1 || dig !== this.prev_dig) {
+                this.prev_location = bot.entity.position.clone();
+                this.prev_dig = dig;
+                this.since = Date.now();
+                return;
+            }
+            const limit = bot.pathfinder.isMoving() ? this.max_stall : this.max_planning;
+            if (Date.now() - this.since > limit * 1000) {
+                console.log(`path_stall: no progress for ${limit}s at ${bot.entity.position.floored()}, dropping the path`);
+                bot.modes.behavior_log += 'My path stalled, trying another way.\n';
+                this.since = Date.now();
+                bot.pathfinder.setGoal(null);
+            }
+        }
+    },
+    {
         name: 'self_preservation',
         description: 'Respond to drowning, burning, and damage at low health. Interrupts all actions.',
         interrupts: ['all'],

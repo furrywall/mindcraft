@@ -56,10 +56,25 @@ while [ ! -f pc-runner/STOP ]; do
     clear_leftovers
     node main.js --task_path tasks/basic/beat_game.json --task_id beat_the_game > "$log" 2>&1 &
     pid=$!
-    start=$(date +%s)
+    launched=$(date +%s)
+    # the deadlines count from when the bot is in the world: getting in took over a minute once (the new world's
+    # server paused while empty), and a run was reset for "no wood after 90 seconds" 12 seconds after it spawned
+    start=""
     reason=""
     while kill -0 $pid 2> /dev/null; do
         sleep 5
+        if [ -z "$start" ]; then
+            if grep -aq "andy spawned" "$log"; then
+                start=$(date +%s)
+            elif [ $(( $(date +%s) - launched )) -ge 240 ]; then
+                reason="the bot never got into the world"
+                echo "$(date '+%F %T') resetting run $n: $reason"
+                stop_bot $pid
+                break
+            else
+                continue
+            fi
+        fi
         if grep -aq "Agent died" "$log"; then reason="died: $(grep -a 'Agent died' "$log" | head -1 | sed 's/.*andy //')"; fi
         has_wood=$(grep -acE "Collected [1-9][0-9]* [a-z_]*_(log|stem)\.|Successfully crafted wooden_pickaxe" "$log")
         if [ -z "$reason" ] && [ "$has_wood" = 0 ] && grep -aq "Generated response: .*!explore" "$log"; then

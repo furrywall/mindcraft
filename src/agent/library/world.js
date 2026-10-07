@@ -1,4 +1,5 @@
 import pf from 'mineflayer-pathfinder';
+import Vec3 from 'vec3';
 import * as mc from '../../utils/mcdata.js';
 
 
@@ -157,6 +158,50 @@ export function getNearestBlocksWhere(bot, predicate, distance=8, count=10000) {
     return blocks;
 }
 
+
+export async function findStatesAsync(bot, stateIds, range, max = 2000) {
+    /**
+     * Positions of the blocks whose state id is one of stateIds within range of the bot, nearest first. Reads the chunk
+     * data directly and lets other work run every few sections: bot.findBlocks with a function builds a block object
+     * for every position of every section with a match, and over the lava lakes deep down that held the bot up so long
+     * the server timed it out (a live run lost everything it had on the way to the nether).
+     * @param {Bot} bot - The bot to search around.
+     * @param {number[]} stateIds - The block state ids to look for.
+     * @param {number} range - How far to look.
+     * @param {number} max - The most positions to return.
+     * @returns {Promise<Vec3[]>} - The positions found, nearest first.
+     **/
+    const ids = new Set(stateIds);
+    const p = bot.entity.position.floored();
+    const minY = bot.game.minY;
+    const r2 = range * range;
+    const found = [];
+    let scanned = 0;
+    for (let cx = (p.x - range) >> 4; cx <= (p.x + range) >> 4; cx++) {
+        for (let cz = (p.z - range) >> 4; cz <= (p.z + range) >> 4; cz++) {
+            const column = bot.world.getColumn(cx, cz);
+            if (!column?.sections) continue;
+            for (let sy = 0; sy < column.sections.length; sy++) {
+                const section = column.sections[sy];
+                const by = minY + sy * 16;
+                if (!section?.data || by + 15 < p.y - range || by > p.y + range) continue;
+                // the palette says what's in the section without looking at each block (none for a section of one
+                // kind of block, or one using the global palette)
+                const palette = section.data.palette;
+                if (Array.isArray(palette) && !palette.some(id => ids.has(id))) continue;
+                if (!palette && section.data.value !== undefined && !ids.has(section.data.value)) continue;
+                for (let i = 0; i < 4096; i++) {
+                    if (!ids.has(section.data.get(i))) continue;
+                    const x = cx * 16 + (i & 15), y = by + (i >> 8), z = cz * 16 + ((i >> 4) & 15);
+                    if ((x - p.x) ** 2 + (y - p.y) ** 2 + (z - p.z) ** 2 <= r2) found.push(new Vec3(x, y, z));
+                }
+                if (++scanned % 8 === 0) await new Promise(resolve => setImmediate(resolve));
+            }
+        }
+    }
+    found.sort((a, b) => a.distanceSquared(p) - b.distanceSquared(p));
+    return found.slice(0, max);
+}
 
 export function isOpenToSky(bot, pos) {
     /**
