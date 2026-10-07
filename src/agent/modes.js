@@ -130,7 +130,9 @@ const modes_list = [
                 say(agent, 'I\'m on fire!');
                 // out of the lava the shortest way first, then water on the flames if we have some (not in the nether,
                 // where water boils away at once: pouring it there used up the seconds a practice bot needed to get out
-                // of the lava). pouring water while still standing in lava is what burned a casting bot to death
+                // of the lava). pouring water while still standing in lava is what burned a casting bot to death.
+                // and start for the edge right now, before the action we take over from has stopped
+                if (block.name === 'lava' || blockAbove.name === 'lava') skills.startLavaEscape(bot);
                 execute(this, agent, async () => {
                     if (await skills.escapeLava(bot)) return;
                     const nether = (bot.game.dimension || '').includes('nether');

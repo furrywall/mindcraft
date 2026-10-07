@@ -61,14 +61,17 @@ function makeMovements(bot, {destructive=true, digCost=null, placeCost=null} = {
     // tried every land route before crossing a river, ran out of thinking time, and the bot stood still
     movements.liquidCost = 8;
     // underground, water is flooded caves with no way up to breathe: two runs in a morning walked into one mining iron
-    // and drowned. there, dig round it (rivers up top still get crossed)
-    if (bot.entity.position.y < 50) movements.liquidCost = 40;
+    // and drowned. there, dig round it (rivers up top still get crossed). not once we're in it, when every way out
+    // starts in the water: a bot stood planning in a cave pool until its air ran low
+    if (bot.entity.position.y < 50 && !bot.entity.isInWater) movements.liquidCost = 40;
     // keep a block away from lava where there's another way: two practice bots died in lava crossing the nether to
     // look for a fortress, and one at the edge of the pool it was casting a portal at (the bucket reaches lava from
     // 3 blocks off, so there's no need to stand right by it). in the nether, no jumping gaps either, which out there
     // are often over lava (one bot dropped 16 blocks in 10 seconds on its way down to the lava sea)
     const nether = getDimension(bot) === 'the_nether';
-    if (nether) movements.allowParkour = false;
+    // underground too, where the lava pools are: a live run's path to the pool it was going to cast at took it into
+    // the lava, 4 minutes from the nether
+    if (nether || bot.entity.position.y < 50) movements.allowParkour = false;
     const lava = bot.registry.blocksByName.lava;
     const isLava = (p) => {
         const id = bot.world.getBlockStateId(p);
@@ -3106,6 +3109,39 @@ export async function followPlayer(bot, username, distance=4) {
 }
 
 
+function lavaEscapeSpot(bot) {
+    // the nearest spot within 4 blocks to stand out of lava: solid ground, no lava or fire, few lava blocks next to it
+    const hot = (p) => ['lava', 'fire', 'soul_fire'].includes(bot.blockAt(p)?.name);
+    const here = bot.entity.position;
+    let best = null;
+    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let dy = -1; dy <= 2; dy++) {
+        const p = here.floored().offset(dx, dy, dz);
+        if (bot.blockAt(p.offset(0, -1, 0))?.boundingBox !== 'block' || hot(p) || hot(p.offset(0, 1, 0))) continue;
+        if (bot.blockAt(p)?.boundingBox !== 'empty' || bot.blockAt(p.offset(0, 1, 0))?.boundingBox !== 'empty') continue;
+        // spots by more lava are worse, and climbing is slower
+        const lava_near = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([x, z]) => hot(p.offset(x, 0, z)) || hot(p.offset(x, -1, z))).length;
+        const cost = p.offset(0.5, 0, 0.5).distanceTo(here) + Math.max(0, dy) + 2 * lava_near;
+        if (!best || cost < best.cost) best = {p, cost};
+    }
+    return best;
+}
+
+export function startLavaEscape(bot) {
+    /* Start for the nearest dry spot at once, without waiting: a mode taking over first waits for the action it
+       interrupts to stop, and a live run died in the lava meanwhile (a second or two is all it takes). escapeLava
+       finishes the job. */
+    const best = lavaEscapeSpot(bot);
+    bot.pathfinder.setGoal(null);
+    if (!best) {
+        bot.setControlState('jump', true);
+        return;
+    }
+    bot.lookAt(best.p.offset(0.5, 1.6, 0.5), true).catch(() => {});
+    bot.setControlState('forward', true);
+    bot.setControlState('jump', true);
+    bot.setControlState('sprint', true);
+}
+
 export async function escapeLava(bot) {
     /**
      * Get out of lava or fire the shortest way: to the nearest spot within 4 blocks with solid ground and no lava,
@@ -3121,17 +3157,7 @@ export async function escapeLava(bot) {
     const hot = (p) => ['lava', 'fire', 'soul_fire'].includes(bot.blockAt(p)?.name);
     const inLava = () => hot(bot.entity.position.floored()) || hot(bot.entity.position.offset(0, 1, 0).floored());
     stopPathfinding(bot);
-    const here = bot.entity.position;
-    let best = null;
-    for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let dy = -1; dy <= 2; dy++) {
-        const p = here.floored().offset(dx, dy, dz);
-        if (bot.blockAt(p.offset(0, -1, 0))?.boundingBox !== 'block' || hot(p) || hot(p.offset(0, 1, 0))) continue;
-        if (bot.blockAt(p)?.boundingBox !== 'empty' || bot.blockAt(p.offset(0, 1, 0))?.boundingBox !== 'empty') continue;
-        // spots by more lava are worse, and climbing is slower
-        const lava_near = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([x, z]) => hot(p.offset(x, 0, z)) || hot(p.offset(x, -1, z))).length;
-        const cost = p.offset(0.5, 0, 0.5).distanceTo(here) + Math.max(0, dy) + 2 * lava_near;
-        if (!best || cost < best.cost) best = {p, cost};
-    }
+    const best = lavaEscapeSpot(bot);
     if (best && inLava()) {
         const target = best.p.offset(0.5, 0, 0.5);
         const start = Date.now();
