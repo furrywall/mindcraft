@@ -564,7 +564,10 @@ function getGameProgress(bot) {
     // the scripted stretches do these steps without a turn per craft (after a death, or one that stopped early). given
     // the steps by hand as well, the model followed those instead (searching for iron 7 at a time), so they only show
     // when the scripted one has just been tried and stopped short
-    const stage = dimension !== 'overworld' ? null
+    // in the nether, the blaze rods: the model, told to use !collectBlazeRods, searched for blazes by hand 3 times in a
+    // fortress and gave up on it
+    const stage = dimension === 'the_nether' ? (next.text.startsWith('Blaze rods') ? ['collectBlazeRods(7)', 'Use !collectBlazeRods(7) now: it finds a fortress and its blaze spawner and kills blazes.'] : null)
+        : dimension !== 'overworld' ? null
         : next === steps[0] || next === steps[1] ? ['speedrunOpening', 'Use !speedrunOpening now: it gets the wood, stone tools, furnace and iron pickaxe in one go.']
         // with the buckets and flint_and_steel, !speedrunNether fills the water and gets the cobblestone itself: told to
         // finish the kit first, the model went looking for lava step by step

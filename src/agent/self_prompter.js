@@ -80,6 +80,13 @@ export class SelfPrompter {
                 const result = this.agent.task.runScripted
                     ? await this.agent.task.runScripted(`!${stage}`, 12, false)
                     : await executeCommand(this.agent, `!${stage}`);
+                // the speedrun stages note their own tries (actions.js playStage): note the others', so a stretch that
+                // stopped short is left to the model for a while instead of run again and again
+                if (!stage.startsWith('speedrun')) {
+                    const bot = this.agent.bot;
+                    bot.stage_tries = bot.stage_tries || {};
+                    bot.stage_tries[stage] = Date.now();
+                }
                 if (result)
                     await this.agent.history.add('system', `!${stage} ran (the next step, run for you): ${result}`);
                 await new Promise(r => setTimeout(r, 500));
