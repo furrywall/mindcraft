@@ -2751,7 +2751,7 @@ export async function digOut(bot) {
     return true;
 }
 
-async function gotoWithWatchdog(bot, goal, noProgressMs=30000) {
+async function gotoWithWatchdog(bot, goal, noProgressMs=15000) {
     /* bot.pathfinder.goto, but it settles as soon as the action is interrupted (the pathfinder only checks
        its stop flag when it reaches the next node of a path, which may never happen), and gives up when the
        bot hasn't gotten any closer to the goal for a while. */
@@ -5053,7 +5053,10 @@ export async function speedrunOpening(bot) {
         // only if there's some right here and time to spare: 7 blocks down for coal 4:40 in, a run missed the iron
         // pickaxe deadline (5:00). the kit gets coal on its trip anyway. burning it here keeps the wood for the shield
         const coal = () => count('coal') + count('charcoal');
-        if (coal() < 4 && Date.now() - start < 3 * 60000 && world.getNearestBlocksWhere(bot, b => b.name === 'coal_ore' || b.name === 'deepslate_coal_ore', 8, 1).length > 0) {
+        // and only coal showing within a few steps: going for some 8 blocks off, a practice opening spent 110 seconds
+        // on 4 coal (30 of them on a path that got no closer), when the iron smelts on wood just as well
+        const showing = (b) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some(([x, y, z]) => isAirLike(bot.blockAt(b.position.offset(x, y, z))));
+        if (coal() < 4 && Date.now() - start < 3 * 60000 && world.getNearestBlocksWhere(bot, b => b.name === 'coal_ore' || b.name === 'deepslate_coal_ore', 5, 4).some(b => b.position && showing(b))) {
             await collectBlock(bot, 'coal_ore', 4 - coal());
             if (bot.interrupt_code) return false;
         }
