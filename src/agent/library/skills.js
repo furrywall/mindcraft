@@ -1851,7 +1851,17 @@ export async function breakBlockAt(bot, x, y, z) {
         };
         bot.on('itemDrop', onDrop);
         try {
-            await bot.dig(block, true);
+            try {
+                await bot.dig(block, true);
+            } catch (err) {
+                // another dig started meanwhile (a path left going, a mode) aborts this one: portal casts kept failing
+                // on "Digging aborted". stop whatever's still going and try once more, if the block is still there
+                if (!/aborted/i.test(err.message) || bot.interrupt_code) throw err;
+                stopPathfinding(bot);
+                if (bot.targetDigBlock) bot.stopDigging();
+                if (isAirLike(bot.blockAt(block.position))) return true;
+                await bot.dig(bot.blockAt(block.position), true);
+            }
             for (let t = 0; t < 6 && !dropped; t++) await new Promise(resolve => setTimeout(resolve, 50));
         } finally {
             bot.removeListener('itemDrop', onDrop);
