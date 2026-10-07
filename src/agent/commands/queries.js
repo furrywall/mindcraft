@@ -567,7 +567,10 @@ function getGameProgress(bot) {
         : next === steps[0] || next === steps[1] ? ['speedrunOpening', 'Use !speedrunOpening now: it gets the wood, stone tools, furnace and iron pickaxe in one go.']
         // with the buckets and flint_and_steel, !speedrunNether fills the water and gets the cobblestone itself: told to
         // finish the kit first, the model went looking for lava step by step
-        : (next === steps[3] || next === steps[4]) && !portal_near && buckets >= 2 && any('flint_and_steel', 'fire_charge')
+        // and with part of the gear too: a kit a plank short of the shield, down a mine, had the model hunting for trees
+        // with everything for the portal in its pockets
+        : (next === steps[3] || next === steps[4] || (next === steps[2] && (any('iron_sword', 'diamond_sword') || armor.length >= 1))) &&
+            !portal_near && buckets >= 2 && any('flint_and_steel', 'fire_charge')
             ? ['speedrunNether', 'Use !speedrunNether now: it fills the water bucket, finds a lava pool, casts the portal and goes through, all in one go.']
         : next === steps[2] || next === steps[3] ? ['speedrunKit', 'Use !speedrunKit now: it mines the iron, gold and gravel and makes the sword, shield, chestplate, buckets and flint_and_steel in one go.']
         : null;
