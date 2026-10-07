@@ -1055,6 +1055,8 @@ export async function blockFireball(bot, fireball) {
     return !fireball.isValid;
 }
 
+const FLYING_MOBS = ['blaze', 'phantom', 'vex', 'bee', 'ghast'];
+
 async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
     /* Melee an entity until it dies. Times swings to the weapon cooldown, jump-crits when it can,
        blocks or backs off from exploding creepers, and gives up if the target can't be reached.
@@ -1132,7 +1134,7 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
             // walking up to an archer (blocks arrows). it comes down for each swing
             const cooldown = mc.getAttackCooldown(bot.heldItem?.name) * 1000;
             const swing_ready = dist <= reach && now - last_attack >= cooldown;
-            const archer = ['skeleton', 'stray', 'bogged', 'pillager'].includes(entity.name);
+            const archer = ['skeleton', 'stray', 'bogged', 'pillager', 'blaze', 'ghast'].includes(entity.name);
             if (has_shield && !swing_ready && (dist < 4 || (archer && dist < 16))) {
                 if (!shielding) bot.activateItem(true);
                 shielding = true;
@@ -1150,7 +1152,10 @@ async function meleeFight(bot, entity, {timeout=60000, cornered=false} = {}) {
                 return false;
             }
 
-            setMode('chase');
+            // flyers hover out of reach over the drops: chasing a blaze walked a practice bot off a fortress bridge.
+            // hold our ground, shield up, and hit them when they come close
+            if (FLYING_MOBS.includes(entity.name)) setMode(null);
+            else setMode('chase');
             if (swing_ready) {
                 // critical hit: attack while falling after a jump. skip it in water/when the target is right on top of us
                 const can_crit = bot.entity.onGround && !bot.entity.isInWater && !bot.entity.isInLava && dist > 1.5 && entity.name !== 'creeper';
