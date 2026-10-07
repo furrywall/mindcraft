@@ -1484,10 +1484,17 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         // flint only drops from gravel, one time in ten
         const flint = () => world.getInventoryCounts(bot)['flint'] || 0;
         const start = flint();
-        let mined = 0;
+        let mined = 0, searches = 0;
         while (flint() - start < num && mined < num * 30 && !bot.interrupt_code) {
-            if (!(await collectBlock(bot, 'gravel', 1)))
-                break;
+            if (!(await collectBlock(bot, 'gravel', 1))) {
+                // out of gravel here: a kit mined all 8 in reach, got no flint (that happens 4 times in 10) and handed
+                // the run to the model, which went off mining gold. look for more, twice
+                if (bot.interrupt_code || ++searches > 2) break;
+                const more = world.getNearestBlocksWhere(bot, b => b.name === 'gravel', 96, 1)[0];
+                if (more) await goToPosition(bot, more.position.x, more.position.y, more.position.z, 3).catch(() => {});
+                else await explore(bot, 60);
+                continue;
+            }
             mined++;
         }
         const got = flint() - start;

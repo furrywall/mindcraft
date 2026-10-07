@@ -398,7 +398,8 @@ function getGameProgress(bot) {
     // piglins leave you alone if you wear any gold armor: speedrunners wear golden boots, the cheapest piece
     const gold_armor = ['golden_boots', 'golden_helmet', 'golden_leggings', 'golden_chestplate'];
     const has_gold_armor = armor.some(a => gold_armor.includes(a)) || any(...gold_armor);
-    if (!has_gold_armor) {
+    // only wanted past the nether (see skills.speedrunKit): asked for, the model went off mining gold
+    if (!has_gold_armor && process.env.MINDCRAFT_NETHER_ONLY !== '1') {
         const gold = count('gold_ingot') + count('raw_gold');
         portal_kit.push(gold >= 4
             ? `golden_boots: ${count('raw_gold') > 0 ? 'smelt your raw_gold, then ' : ''}!craftRecipe("golden_boots", 1). You put them on automatically, and piglins in the nether won't attack you while you wear gold`
@@ -479,7 +480,7 @@ function getGameProgress(bot) {
                     coal_note;
             })()},
         // no diamonds: the portal's obsidian frame is cast in place from lava and water, the way speedrunners do it
-        {done: portal_kit.length === 0 || (portal_near && geared && has_gold_armor) || dimension !== 'overworld' || eyes > 0, text: 'Portal kit (2 buckets, flint_and_steel, 36 cobblestone, golden boots)',
+        {done: portal_kit.length === 0 || (portal_near && geared && has_gold_armor) || dimension !== 'overworld' || eyes > 0, text: `Portal kit (2 buckets, flint_and_steel, 36 cobblestone${process.env.MINDCRAFT_NETHER_ONLY === '1' ? '' : ', golden boots'})`,
             next: `To cast a nether portal without diamonds you still need: ${portal_kit.join('; ')}. Get it all in one trip.`},
         {done: count('blaze_rod') + count('blaze_powder') / 2 >= 6 || eye_potential >= 12, text: 'Blaze rods (6+)',
             next: dimension === 'the_nether'

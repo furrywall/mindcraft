@@ -7,6 +7,16 @@ import { plugin as pvp } from 'mineflayer-pvp';
 import { plugin as collectblock } from 'mineflayer-collectblock';
 import { plugin as autoEat } from 'mineflayer-auto-eat';
 import plugin from 'mineflayer-armor-manager';
+import paletteContainers from 'prismarine-chunk/src/pc/common/PaletteContainer.js';
+
+// a chunk section of one block only (all air above the ground, all stone deep down) reports no palette, and
+// mineflayer's block search then looks at each of its 4096 blocks in case the block it wants is there. a search that
+// finds nothing (no trees, no gravel left) looked through every such section in range: 114ms for 64 blocks on the
+// practice server, 4ms with this
+Object.defineProperty(paletteContainers.SingleValueContainer.prototype, 'palette', {
+    get() { return [this.value]; },
+    configurable: true,
+});
 const armorManager = plugin;
 let mc_version = settings.minecraft_version;
 let mcdata = null;
