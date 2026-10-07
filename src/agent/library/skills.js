@@ -1798,6 +1798,23 @@ async function confirmBroken(bot, block) {
     return true;
 }
 
+async function digSafely(bot, block) {
+    /* bot.dig, but a dig that another one aborts (a path still digging its way somewhere, a mode) gets one more try
+       with everything else stopped, if the block is still there: bunkering down from a losing fight failed on
+       "Digging aborted" twice in a morning, and both bots died where they stood. */
+    try {
+        await bot.dig(block, true);
+    } catch (err) {
+        if (!/aborted/i.test(err.message) || bot.interrupt_code) throw err;
+        stopPathfinding(bot);
+        bot.pathfinder.setGoal(null);
+        if (bot.targetDigBlock) bot.stopDigging();
+        const again = bot.blockAt(block.position);
+        if (!again || isAirLike(again)) return;
+        await bot.dig(again, true);
+    }
+}
+
 async function ensureHarvestTool(bot, block) {
     /* Hold a tool that can harvest block. Equipping can go missing and the inventory drift (a cast with an iron
        pickaxe gave up on deepslate for want of one), so pick it by hand, from the server's copy if need be. And with
@@ -1868,17 +1885,8 @@ export async function breakBlockAt(bot, x, y, z) {
         };
         bot.on('itemDrop', onDrop);
         try {
-            try {
-                await bot.dig(block, true);
-            } catch (err) {
-                // another dig started meanwhile (a path left going, a mode) aborts this one: portal casts kept failing
-                // on "Digging aborted". stop whatever's still going and try once more, if the block is still there
-                if (!/aborted/i.test(err.message) || bot.interrupt_code) throw err;
-                stopPathfinding(bot);
-                if (bot.targetDigBlock) bot.stopDigging();
-                if (isAirLike(bot.blockAt(block.position))) return true;
-                await bot.dig(bot.blockAt(block.position), true);
-            }
+            // portal casts kept failing on "Digging aborted" (see digSafely)
+            await digSafely(bot, block);
             for (let t = 0; t < 6 && !dropped; t++) await new Promise(resolve => setTimeout(resolve, 50));
         } finally {
             bot.removeListener('itemDrop', onDrop);
@@ -2618,11 +2626,12 @@ export async function bunkerDown(bot) {
     }
     const scaffold = getScaffoldItem(bot);
     stopPathfinding(bot);
+    bot.pathfinder.setGoal(null);
     for (let dy = 1; dy <= 2; dy++) {
         const block = bot.blockAt(start.offset(0, -dy, 0));
         try {
             await bot.tool.equipForBlock(block);
-            await bot.dig(block);
+            await digSafely(bot, block);
         } catch (err) {
             log(bot, `Couldn't dig down to bunker: ${err.message}.`);
             return false;
@@ -4554,6 +4563,13 @@ export async function speedrunKit(bot) {
     const pending = bot.background_smelt?.output === 'iron_ingot' ? bot.background_smelt.expected : 0;
     const iron_have = count('iron_ingot') + count('raw_iron') + pending;
 
+    // torches before going down for the iron, so the tunnels get lit as we mine (collecting puts one down where it's
+    // dark): 7 of 18 runs in a day died to zombies and skeletons, most of them down the mines in the kit, in fights
+    // with 3 or 4 at once. they were only made at the end of the kit before
+    if (count('torch') < 4 && count('coal') + count('charcoal') >= 2) {
+        await craftRecipe(bot, 'torch', 2);
+        if (bot.interrupt_code) return false;
+    }
     // one trip for all of it: iron, gold for the boots, gravel for the flint, and the coal to smelt it with
     const iron = () => count('iron_ingot') + count('raw_iron') + pending;
     if (iron() < iron_needed) {
