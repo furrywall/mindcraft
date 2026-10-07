@@ -470,6 +470,9 @@ export async function isClearPath(bot, target) {
 
 export function shouldPlaceTorch(bot) {
     if (!bot.modes.isOn('torch_placing') || bot.interrupt_code) return false;
+    // not in the nether, where the light keeps blazes from spawning: a practice bot that had found a fortress's blaze
+    // spawner waited by it for 90 seconds and none came
+    if ((bot.game.dimension || '').includes('nether')) return false;
     const pos = getPosition(bot);
     // TODO: check light level instead of nearby torches, block.light is broken
     let nearest_torch = getNearestBlock(bot, 'torch', 6);
